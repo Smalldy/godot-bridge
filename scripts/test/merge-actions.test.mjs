@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { createMergeActions } from '../../plugin/task-center/actions/merge.mjs'
+// T-223: the refresh path starts its reviewer through the coordinator, so these
+// harnesses drive the real one instead of a startReviewer stub.
+import { applyStageDelivery, createStageCoordinator } from '../../plugin/task-center/stage-coordinator.mjs'
 
 const ok = (payload) => Object.assign({ ok: true }, payload)
 const failure = (code, message) => ({ ok: false, code: code, message: message })
@@ -276,18 +279,20 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
       readBranchHead: async () => ({ ok: true, head: 'head-2' }),
       git: { diffNameOnly: async () => ({ ok: true, files: ['a.gd'] }) },
       messageOf: (error) => String(error && error.message ? error.message : error),
-      stageAgents: {
-        async startReviewer(entry) {
+      // T-223: the ONE authority starts the reviewer (the action no longer calls
+      // the stage service itself). This stub records the same facts the old
+      // startReviewer + recordDeliveredTo pair did.
+      stageCoordinator: {
+        async ensure(kind, entry) {
           seen.started.push(entry.id)
-          return { ok: true, agentId: 'reviewer-T-5-2', name: 'reviewer-t-5' }
+          const member = { name: 'reviewer-t-5', id: 'reviewer-T-5-2' }
+          seen.delivered.push({ id: entry.id, kind: kind, member: member })
+          return { ok: true, action: 'spawned', agentId: member.id, name: member.name, taskId: entry.id, kind: kind }
         },
       },
       markWaiting: async () => {},
       clearWaiting: async () => {},
       reviewBriefFor: () => 'review brief',
-      recordDeliveredTo: async (project, id, kind, member) => {
-        seen.delivered.push({ id: id, kind: kind, member: member })
-      },
       ok: (payload) => Object.assign({ ok: true }, payload),
       failure: (code, message) => ({ ok: false, code: code, message: message }),
     })
@@ -378,6 +383,52 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
       }
       return ids
     }
+    const stageService = {
+      async releaseTask(entry, options) {
+        const ids = recordedIds(entry)
+        calls.push({ kind: 'releaseTask', ids: ids, roles: options.roles })
+        // A teardown that failed must refuse the replacement even when the
+        // append-only catalog already reports the child as inactive.
+        if (flags.throwRelease) {
+          live.clear()
+          throw new Error('the stage runtime refused the release')
+        }
+        if (flags.unresolvedId !== null) {
+          live.delete(flags.unresolvedId)
+          return { ok: false, released: [], failed: [], unresolved: [{ agentId: flags.unresolvedId }], interrupted: [], kept: [], deferred: [] }
+        }
+        const released = []
+        for (const id of ids) {
+          if (flags.keepOldLive) continue
+          if (live.delete(id)) released.push({ agentId: id })
+        }
+        return { ok: true, released: released, failed: [], unresolved: [], interrupted: [], kept: [], deferred: [] }
+      },
+      async startReviewer() {
+        sequence += 1
+        const agentId = 'reviewer-new-' + String(sequence)
+        calls.push({ kind: 'startReviewer', agentId: agentId })
+        live.add(agentId)
+        return { ok: true, agentId: agentId, name: 'reviewer-t-9-' + String(sequence) }
+      },
+      async release(agentId) {
+        calls.push({ kind: 'release', agentId: String(agentId) })
+        return live.delete(String(agentId))
+      },
+    }
+    // T-223: the real coordinator drives the spawn decision; only its seams are
+    // faked (the board write lands in the harness board).
+    const stageCoordinator = createStageCoordinator({
+      stageService: stageService,
+      readBoard: async () => ({ board: board }),
+      recordDelivery: async (projectPath, taskId, kind, delivery) => {
+        const applied = applyStageDelivery(board, taskId, kind, delivery)
+        if (applied.ok !== true) return applied
+        board.tasks = applied.board.tasks
+        return { ok: true }
+      },
+      clock: () => at,
+    })
     const actions = createMergeActions({
       mergeRefusal: () => null,
       mergeQueueKey: async () => 'main',
@@ -405,49 +456,16 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
       readBranchHead: async () => ({ ok: true, head: head.value }),
       git: { diffNameOnly: async () => ({ ok: true, files: ['a.gd'] }) },
       messageOf: (error) => String(error && error.message ? error.message : error),
-      stageAgents: {
-        async releaseTask(entry, options) {
-          const ids = recordedIds(entry)
-          calls.push({ kind: 'releaseTask', ids: ids, roles: options.roles })
-          // A teardown that failed must refuse the replacement even when the
-          // append-only catalog already reports the child as inactive.
-          if (flags.throwRelease) {
-            live.clear()
-            throw new Error('the stage runtime refused the release')
-          }
-          if (flags.unresolvedId !== null) {
-            live.delete(flags.unresolvedId)
-            return { ok: false, released: [], failed: [], unresolved: [{ agentId: flags.unresolvedId }], interrupted: [], kept: [], deferred: [] }
-          }
-          const released = []
-          for (const id of ids) {
-            if (flags.keepOldLive) continue
-            if (live.delete(id)) released.push({ agentId: id })
-          }
-          return { ok: true, released: released, failed: [], unresolved: [], interrupted: [], kept: [], deferred: [] }
-        },
-        async startReviewer() {
-          sequence += 1
-          const agentId = 'reviewer-new-' + String(sequence)
-          calls.push({ kind: 'startReviewer', agentId: agentId })
-          live.add(agentId)
-          return { ok: true, agentId: agentId, name: 'reviewer-t-9-' + String(sequence) }
-        },
-        async release(agentId) {
-          calls.push({ kind: 'release', agentId: String(agentId) })
-          return live.delete(String(agentId))
-        },
-      },
+      // T-223: release stays with the stage service; STARTS go through the
+      // coordinator-only `stageCoordinator` seam below.
+      stageAgents: stageService,
+      stageCoordinator: stageCoordinator,
       // Running ids only (the DSH catalog keeps disposed children as inactive
       // rows); null models a facade that cannot read the tree at all.
       liveStageIds: async () => (flags.liveUnreadable ? null : new Set(live)),
       markWaiting: async () => {},
       clearWaiting: async () => {},
       reviewBriefFor: () => 'review brief',
-      recordDeliveredTo: async (project, id, kind, member) => {
-        const entry = board.tasks.filter((row) => row.id === id)[0]
-        entry.review = Object.assign({}, entry.review, { deliveredTo: { name: member.name, id: member.id } })
-      },
       ok: (payload) => Object.assign({ ok: true }, payload),
       failure: (code, message) => ({ ok: false, code: code, message: message }),
     })
@@ -503,10 +521,12 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
     rig.flags.failWrite = true
     const failedWrite = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
     check(
-      'a refresh whose board write fails releases the reviewer it just started',
+      // T-223: the round is written BEFORE the child starts, so a failed write
+      // starts nothing at all (previously a reviewer was started and rolled back).
+      'a refresh whose board write fails starts no reviewer at all',
       failedWrite.ok !== true &&
         failedWrite.code === 'write-conflict' &&
-        rig.calls.some((call) => call.kind === 'release' && call.agentId === 'reviewer-new-1') &&
+        rig.calls.filter((call) => call.kind === 'startReviewer').length === 0 &&
         rig.live.size === 0,
       JSON.stringify({ calls: rig.calls, live: Array.from(rig.live) }),
     )

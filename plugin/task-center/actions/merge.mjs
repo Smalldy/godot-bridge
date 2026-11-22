@@ -32,6 +32,9 @@ export function createMergeActions(deps) {
   const git = deps.git
   const messageOf = deps.messageOf
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
+  // T-223: reviewer starts have ONE authority (the StageCoordinator); the stage
+  // service is still used here only to RELEASE the round being replaced.
+  const stageCoordinator = deps.stageCoordinator === undefined ? null : deps.stageCoordinator
   // T-204: RUNNING stage children of one root, or null when the tree cannot tell.
   // Running-only on purpose: DSH's catalog keeps disposed children as inactive
   // rows, so catalog membership is not proof that a child is still executing.
@@ -39,7 +42,6 @@ export function createMergeActions(deps) {
   const markWaiting = deps.markWaiting
   const clearWaiting = deps.clearWaiting
   const reviewBriefFor = deps.reviewBriefFor
-  const recordDeliveredTo = deps.recordDeliveredTo
   const ok = deps.ok
   const failure = deps.failure
 
@@ -199,18 +201,6 @@ export function createMergeActions(deps) {
     return { ok: true, released: released, stillLive: [] }
   }
 
-  /** Dispose one reviewer this action just started (a rollback, never a stage end). */
-  async function releaseStarted(provisioned) {
-    if (provisioned === null || provisioned === undefined || provisioned.ok !== true) return false
-    const agentId = typeof provisioned.agentId === 'string' && provisioned.agentId !== '' ? provisioned.agentId : null
-    if (agentId === null || stageAgents === null || typeof stageAgents.release !== 'function') return false
-    try {
-      return (await stageAgents.release(agentId)) === true
-    } catch (error) {
-      return false
-    }
-  }
-
   async function refreshMerge(source, context, projectPath) {
     const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
     if (id === '') return failure('missing-id', 'refreshMerge needs a task id')
@@ -287,9 +277,8 @@ export function createMergeActions(deps) {
       }
       // A new head/base starts a fresh review round: the previous decisions
       // were taken on a different tree, so refreshMergeRequest resets the
-      // phases and the queue waits for review + tests again. Start the reviewer
-      // before the write so the scheduler's stage pass cannot race.
-      if (stageAgents === null) {
+      // phases and the queue waits for review + tests again.
+      if (stageCoordinator === null) {
         await markWaiting(projectPath, id, 'agent-runtime-unavailable', 'no subagent runtime to start a reviewer', context)
         return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (agent-runtime-unavailable); the merge request was not refreshed')
       }
@@ -300,11 +289,6 @@ export function createMergeActions(deps) {
         await markWaiting(projectPath, id, String(cleared.code), String(cleared.message), context)
         return failure(String(cleared.code), String(cleared.message) + '; the merge request was not refreshed')
       }
-      const provisioned = stageAgents === null ? null : await stageAgents.startReviewer(task, reviewBriefFor(task, projectPath))
-      if (provisioned !== null && provisioned.ok !== true) {
-        await markWaiting(projectPath, id, 'reviewer-unavailable', String(provisioned.message), context)
-        return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (' + String(provisioned.message) + '); the merge request was not refreshed')
-      }
       const recorded = await writeTask(
         projectPath,
         id,
@@ -312,27 +296,31 @@ export function createMergeActions(deps) {
           refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by, writeByName(context), context !== undefined && context !== null && context.role === 'user' ? 'user' : 'worker'),
         context,
       )
-      if (recorded.ok !== true) {
-        // T-204: the reviewer was started before the write; a write that did not
-        // land must not leave it running unrecorded.
-        await releaseStarted(provisioned)
-        return recorded
-      }
+      if (recorded.ok !== true) return recorded
       await clearWaiting(projectPath, id, context)
-      // A refreshed head starts a fresh review round: ensure the reviewer and
-      // send it the new brief, exactly like a submit would.
+      // A refreshed head starts a fresh review round. T-223: the reviewer starts
+      // through the ONE authority, AFTER the write that opened its round. The
+      // coordinator re-reads the fresh pending round (deliveredTo null) and
+      // records the delivery before releasing its per-card queue, so a sweep
+      // that tries to start the same reviewer simultaneously reuses this one
+      // instead of starting a second. A failed start leaves the refreshed card
+      // waiting, never behind an unrecorded child.
+      let provisioned = null
       if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
         const round = recorded.task.review === null || recorded.task.review === undefined ? 1 : recorded.task.review.attempt
         emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
-        if (provisioned !== null && provisioned.ok === true) {
-          await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', { name: provisioned.name, id: provisioned.agentId })
+        provisioned = await stageCoordinator.ensure('reviewer', recorded.task, reviewBriefFor(recorded.task, projectPath), { projectPath: projectPath })
+        if (provisioned.ok !== true || (provisioned.action !== 'spawned' && provisioned.action !== 'reused')) {
+          await markWaiting(projectPath, id, 'reviewer-unavailable', String(provisioned.message), context)
         }
-        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
       }
-      // A refreshed card that is not in review has no round for the new child:
-      // stop it instead of leaving an unrecorded reviewer behind.
-      await releaseStarted(provisioned)
-      return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
+      return ok({
+        task: recorded.task,
+        events: recorded.events,
+        merge: recorded.task === null ? null : recorded.task.merge,
+        provisioned: provisioned,
+        stage: provisioned,
+      })
     })
   }
 

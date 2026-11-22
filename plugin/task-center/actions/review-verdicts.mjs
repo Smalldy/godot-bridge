@@ -34,10 +34,11 @@ export function createReviewVerdictActions(deps) {
   const clearStageSlots = deps.clearStageSlots
   const reworkBriefFor = deps.reworkBriefFor
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
+  // T-223: reviewer/tester starts have ONE authority (the StageCoordinator).
+  const stageCoordinator = deps.stageCoordinator === undefined ? null : deps.stageCoordinator
   const state = deps.state
   const testerBriefFor = deps.testerBriefFor
   const godotInfoFor = deps.godotInfoFor
-  const recordDeliveredTo = deps.recordDeliveredTo
   // T-191: the structured review contract.
   const validateReviewRecord = deps.validateReviewRecord
   const renderReviewReasons = deps.renderReviewReasons
@@ -352,7 +353,7 @@ export function createReviewVerdictActions(deps) {
       emitActivity(context, 'review-end', 'approved', id)
       emitActivity(null, 'test-start', 'test candidate stage started', id, 'host')
       if (candidate !== null) emitActivity(null, 'worktree-create', 'test candidate ' + String(candidate.path), id, 'host')
-      if (stageAgents === null) {
+      if (stageCoordinator === null) {
         await markWaiting(projectPath, id, 'agent-runtime-unavailable', 'no subagent runtime to start a tester', context)
         return failure('tester-unavailable', 'no tester could be started for ' + id + ' (agent-runtime-unavailable); the task waits in testing with that reason and will be retried by the host')
       }
@@ -360,7 +361,12 @@ export function createReviewVerdictActions(deps) {
         result.candidate = candidate
         if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}
         state.memory.testCandidates[result.task.id] = { candidate: candidate, hostCheck: hostCheck }
-        const started = await stageAgents.startTester(
+        // T-223: the tester starts through the ONE authority. It re-reads the
+        // pending test round this verdict just opened and records the delivery
+        // before releasing its queue, so a retest triggered at the same moment
+        // reuses this tester instead of spawning a second one.
+        const ensured = await stageCoordinator.ensure(
+          'tester',
           result.task,
           testerBriefFor(result.task, projectPath, candidate, {
             godot: await godotInfoFor(projectPath, candidate.path),
@@ -371,18 +377,18 @@ export function createReviewVerdictActions(deps) {
             artifact: artifact,
           }),
           // T-214: the tester's shell starts in the candidate it was built to test.
-          { cwd: candidate.path },
+          { projectPath: projectPath, cwd: candidate.path },
         )
-        if (!stageAgents.available || started.ok !== true) {
+        if (ensured.ok !== true) {
           // The review round is over; do not leave its reviewer running behind
           // a card that waits for a tester (T-183). The reviewer is this
           // action's caller, so it is queued, not disposed in flight (T-185).
           await releaseStageRoster(result.task, ['reviewer'], context)
-          await markWaiting(projectPath, id, 'tester-unavailable', started.message, context)
-          return failure('tester-unavailable', 'no tester could be started for ' + id + ' (' + String(started.message) + '); the task waits in testing')
+          await markWaiting(projectPath, id, 'tester-unavailable', ensured.message, context)
+          return failure('tester-unavailable', 'no tester could be started for ' + id + ' (' + String(ensured.message) + '); the task waits in testing')
         }
-        result.provisioned = started
-        await recordDeliveredTo(projectPath, result.task.id, 'tester', { name: started.name, id: started.agentId })
+        result.stage = ensured
+        if (ensured.action === 'spawned' || ensured.action === 'reused') result.provisioned = ensured
       }
     }
     if (stageAgents !== null && (action === 'approveReview' || action === 'requestChanges')) {

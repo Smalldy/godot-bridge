@@ -48,6 +48,9 @@ import { createLifecycleActions } from './actions/lifecycle.mjs'
 import { createRoleActions } from './actions/roles.mjs'
 import { createMergeActions } from './actions/merge.mjs'
 import { createStageService } from './stage-service.mjs'
+// T-223: the ONE authority that starts a reviewer/tester child. No action or
+// API path may call stageAgents.startReviewer/startTester directly.
+import { applyStageDelivery, createStageCoordinator, stageRecordKeyOf } from './stage-coordinator.mjs'
 // T-221: the bound of a host agent-tree read lives next to the fallback reader,
 // and the stage facade delegates the deferred self-release reconciler to it.
 import { AGENT_LIST_TIMEOUT_MS, markDeferredReleaseReturned, reapDeferredReleases } from './task-agents.mjs'
@@ -442,6 +445,45 @@ export function createApi(ctx, options) {
           },
         }
   const stageAgents = stageTaskAgents === null ? null : createStageService({ taskAgents: stageTaskAgents })
+  /**
+   * T-223: reviewer/tester starts have ONE authority. Every path below (submit,
+   * approveReview's tester, refreshMerge, the host retest, recoverWaiting and
+   * the takeover/stage replacement) goes through this coordinator; none of them
+   * may call stageAgents.startReviewer/startTester directly. The coordinator
+   * re-reads the board inside its per-card queue, reuses an already-delivered
+   * child, and records deliveredTo itself before releasing the queue.
+   */
+  const stageCoordinator =
+    stageAgents === null
+      ? null
+      : createStageCoordinator({
+          stageService: stageAgents,
+          readBoard: async function (projectPath) {
+            const read = await readBoardOrFail(projectPath)
+            return read.failed === undefined ? { board: read.board } : { failure: read.failed }
+          },
+          recordDelivery: function (projectPath, taskId, kind, delivery) {
+            return recordDeliveredTo(projectPath, taskId, kind, delivery)
+          },
+          // Liveness is ONLY a handle this process already owns. The per-root
+          // task-agent set answers by exact id without any agent-tree read; when
+          // it cannot answer (another process started the child, or the facade
+          // keeps no handles) the coordinator refuses to spawn instead of racing.
+          localHandle: function (rootId, agentId) {
+            if (taskAgents === null || typeof taskAgents.taskAgentsFor !== 'function') return null
+            try {
+              const instance = taskAgents.taskAgentsFor(rootId)
+              if (instance === null || instance === undefined || typeof instance.handleFor !== 'function') return null
+              return instance.handleFor(agentId) !== null
+            } catch (error) {
+              return null
+            }
+          },
+          // Deferred: the clock const is defined below this block.
+          clock: function () {
+            return clock()
+          },
+        })
   const autoMerge = opts.autoMerge === true
   // The independent tester workflow (candidate checkout + host auto-merge) is
   // active when the production row wires the merge queue.
@@ -814,6 +856,7 @@ export function createApi(ctx, options) {
     git: git,
     messageOf: messageOf,
     stageAgents: stageAgents,
+    stageCoordinator: stageCoordinator,
     // T-204: refreshMerge must prove the previous reviewer/tester is gone before
     // it starts the next one. T-221: that tree read is bounded and answers "cannot
     // tell" when it overruns, so a hung catalog cannot hold the merge queue.
@@ -821,7 +864,6 @@ export function createApi(ctx, options) {
     markWaiting: queueGuardedMarkWaiting,
     clearWaiting: queueGuardedClearWaiting,
     reviewBriefFor: reviewBriefFor,
-    recordDeliveredTo: recordDeliveredTo,
     ok: ok,
     failure: failure,
   })
@@ -832,7 +874,7 @@ export function createApi(ctx, options) {
     clock: clock,
     prepareMergeRequest: prepareMergeRequest,
     REVIEW_MAX_ROUNDS: REVIEW_MAX_ROUNDS,
-    stageAgents: stageAgents,
+    stageCoordinator: stageCoordinator,
     markWaiting: markWaiting,
     writeTask: writeTask,
     writeByName: writeByName,
@@ -845,7 +887,6 @@ export function createApi(ctx, options) {
     releaseTaskLocks: releaseTaskLocks,
     emitActivity: emitActivity,
     reviewBriefFor: reviewBriefFor,
-    recordDeliveredTo: recordDeliveredTo,
     ok: ok,
     failure: failure,
   })
@@ -909,10 +950,10 @@ export function createApi(ctx, options) {
     clearStageSlots: clearStageSlots,
     reworkBriefFor: reworkBriefFor,
     stageAgents: stageAgents,
+    stageCoordinator: stageCoordinator,
     state: state,
     testerBriefFor: testerBriefFor,
     godotInfoFor: godotInfoFor,
-    recordDeliveredTo: recordDeliveredTo,
     reviewBriefFor: reviewBriefFor,
     validateReviewRecord: validateReviewRecord,
     renderReviewReasons: renderReviewReasons,
@@ -1551,16 +1592,21 @@ export function createApi(ctx, options) {
         return recorded
       }
       recorded.candidate = rebuilt
-      if (stageAgents !== null) {
-        const started = await stageAgents.startTester(
+      // T-223: the retest tester goes through the ONE authority. It re-reads the
+      // board this write just landed (the reset round has no deliveredTo) and
+      // reuses a tester another path already delivered in the same moment — the
+      // T-221 double-tester race. A card that already owns a tester is never
+      // given a second one.
+      if (stageCoordinator !== null) {
+        const cwd = stageCwdFor(rebuilt)
+        const ensured = await stageCoordinator.ensure(
+          'tester',
           recorded.task,
           testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck, artifact: rebuiltArtifact }),
-          stageCwdFor(rebuilt),
+          Object.assign({ projectPath: projectPath }, cwd === null ? {} : cwd),
         )
-        if (started.ok === true) {
-          await recordDeliveredTo(projectPath, recorded.task.id, 'tester', { name: started.name, id: started.agentId })
-          recorded.provisioned = started
-        }
+        recorded.stage = ensured
+        if (ensured.ok === true && ensured.action === 'spawned') recorded.provisioned = ensured
       }
       return recorded
     }
@@ -1761,30 +1807,42 @@ export function createApi(ctx, options) {
 
 
 
-  /** T-116: remember WHO a stage brief was handed to, on the card itself, so the
-   * verdict gate still recognises that child without any roster. */
-  async function recordDeliveredTo(projectPath, taskId, kind, member) {
-    if (member === null || member === undefined || typeof member !== 'object') return
-    const name = typeof member.name === 'string' && member.name !== '' ? member.name : null
-    const id = member.id === undefined || member.id === null ? null : String(member.id)
-    if (name === null && id === null) return
-    const key = kind === 'reviewer' ? 'review' : 'test'
+  /**
+   * T-116/T-223: remember WHO a stage brief was handed to, with the delivery
+   * generation, on the card itself.
+   *
+   * This is the coordinator's write seam, so it returns a typed result instead of
+   * swallowing errors: the coordinator has just started a child and MUST dispose
+   * it when the delivery cannot land. The CAS transaction refuses a delivery when
+   * the round it was decided on already moved (a verdict landed, the round was
+   * replaced) or a newer generation owns the round — a late child can never
+   * overwrite the current one.
+   */
+  async function recordDeliveredTo(projectPath, taskId, kind, delivery) {
+    if (delivery === null || delivery === undefined || typeof delivery !== 'object') {
+      return { ok: false, code: 'invalid-delivery', message: 'a stage delivery needs the child it records' }
+    }
+    const id = delivery.id === undefined || delivery.id === null ? '' : String(delivery.id)
+    if (id === '') return { ok: false, code: 'invalid-delivery', message: 'a stage delivery needs a child id' }
+    const name = typeof delivery.name === 'string' && delivery.name !== '' ? delivery.name : null
+    // T-221: an abandoned merge-queue turn may not land a late delivery either.
+    if (queueTurnAbandoned()) return abandonedRefusal('stage delivery', String(taskId))
+    const record = {
+      id: id,
+      name: name,
+      at: typeof delivery.at === 'string' && delivery.at !== '' ? delivery.at : new Date(clock()).toISOString(),
+      generation: Number.isFinite(delivery.generation) ? Math.floor(delivery.generation) : null,
+      roundAt: typeof delivery.roundAt === 'string' && delivery.roundAt !== '' ? delivery.roundAt : null,
+    }
     try {
-      await state.apply(
-        projectPath,
-        (board) => {
-          const tasks = board.tasks.map((task) => {
-            if (String(task.id) !== String(taskId)) return task
-            const record = task[key]
-            if (record === null || record === undefined) return task
-            const updated = Object.assign({}, record, { deliveredTo: { name: name, id: id, at: new Date(clock()).toISOString() } })
-            return Object.assign({}, task, { [key]: updated })
-          })
-          return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
-        },
-        writePolicyFor(projectPath),
-      )
-    } catch (error) {}
+      const applied = await state.apply(projectPath, (board) => applyStageDelivery(board, taskId, kind, record), writePolicyFor(projectPath))
+      if (applied.failed !== null) {
+        return { ok: false, code: applied.failed.code, message: applied.failed.message }
+      }
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, code: 'delivery-write-failed', message: messageOf(error) }
+    }
   }
 
   /** Drop a task's stage-queue residue when it leaves a stage (rework, verdict,
@@ -3549,9 +3607,53 @@ export function createApi(ctx, options) {
   }
 
   /**
+   * Drop the deliveredTo of one OPEN round before the round is handed to a new
+   * owner/child. Guarded by the id the caller saw: a delivery that landed while
+   * the old child was being released is left alone, so nothing clobbers a newer
+   * generation.
+   */
+  async function clearStageDeliveredTo(projectPath, taskId, kind, expectedId) {
+    const key = stageRecordKeyOf(kind)
+    if (key === null) return false
+    try {
+      const applied = await state.apply(
+        projectPath,
+        (board) => {
+          const tasks = board.tasks.map((task) => {
+            if (String(task.id) !== String(taskId)) return task
+            const record = task[key]
+            if (record === null || record === undefined || typeof record !== 'object') return task
+            const delivered = record.deliveredTo
+            if (
+              delivered !== null &&
+              delivered !== undefined &&
+              typeof delivered.id === 'string' &&
+              typeof expectedId === 'string' &&
+              delivered.id !== expectedId
+            ) {
+              // A different child was delivered meanwhile: the landed state wins.
+              return task
+            }
+            return Object.assign({}, task, { [key]: Object.assign({}, record, { deliveredTo: null }) })
+          })
+          return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+        },
+        writePolicyFor(projectPath),
+      )
+      return applied.failed === null
+    } catch (error) {
+      return false
+    }
+  }
+
+  /**
    * T-153: provision + deliver the stage brief for a card that just changed
    * owner. The takeover session's reviewer/tester receives the same brief the
    * normal stage path sends; an approved or passed record is never recomputed.
+   *
+   * T-223: this path used to start the child itself. It now proves the old child
+   * is gone, clears the stale delivery and lets the StageCoordinator be the one
+   * authority that starts (and records) the new child.
    */
   async function redeliverStage(kind, projectPath, board, task) {
     const outcome = { kind: kind, taskId: String(task.id), provisioned: false, delivered: false, position: null, error: null }
@@ -3561,7 +3663,7 @@ export function createApi(ctx, options) {
       const record = kind === 'reviewer' ? task.review : task.test
       const open = record !== null && record !== undefined && record.status === 'pending'
       if (!open) return outcome
-      if (stageAgents === null) {
+      if (stageCoordinator === null) {
         outcome.error = 'agent-runtime-unavailable'
         return outcome
       }
@@ -3570,14 +3672,44 @@ export function createApi(ctx, options) {
         kind === 'reviewer'
           ? reviewBriefFor(task, projectPath)
           : testerBriefFor(task, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
-      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text, stageCwdFor(candidate))
-      if (started.ok !== true) {
-        outcome.error = String(started.code === undefined ? 'start-failed' : started.code)
+      // The child the record names belongs to the previous owner or to the paused
+      // round, so it is NOT reusable for the new owner. Dispose it and prove it is
+      // gone BEFORE the record is cleared: a child that cannot be stopped must
+      // refuse the hand-off, never run behind a second one (T-197/T-204).
+      const delivered = record.deliveredTo
+      if (delivered !== null && delivered !== undefined && typeof delivered.id === 'string' && delivered.id !== '') {
+        let releaseThrew = false
+        try {
+          await stageAgents.releaseTask(task, { roles: [kind], reason: 're-delivering the open round to its new owner' })
+        } catch (error) {
+          releaseThrew = true
+        }
+        const live = await liveChildIdsOf(task.ownerSession)
+        if (releaseThrew === true || (live !== null && live.has(delivered.id))) {
+          outcome.error = 'stage-child-still-live'
+          return outcome
+        }
+        const cleared = await clearStageDeliveredTo(projectPath, task.id, kind, delivered.id)
+        if (cleared !== true) {
+          outcome.error = 'stage-round-not-cleared'
+          return outcome
+        }
+      }
+      const cwd = stageCwdFor(candidate)
+      const ensured = await stageCoordinator.ensure(kind, task, text, Object.assign({ projectPath: projectPath }, cwd === null ? {} : cwd))
+      outcome.stage = ensured
+      if (ensured.ok !== true) {
+        outcome.error = String(ensured.code === undefined || ensured.code === null ? 'start-failed' : ensured.code)
         return outcome
       }
-      outcome.provisioned = true
-      outcome.delivered = true
-      await recordDeliveredTo(projectPath, task.id, kind, { name: started.name, id: started.agentId })
+      if (ensured.action === 'spawned' || ensured.action === 'reused') {
+        outcome.provisioned = ensured.action === 'spawned'
+        outcome.delivered = true
+        outcome.agentId = ensured.agentId
+        outcome.name = ensured.name
+      } else {
+        outcome.error = String(ensured.code === undefined || ensured.code === null ? ensured.action : ensured.code)
+      }
     } catch (error) {
       outcome.error = messageOf(error)
     }
@@ -5675,7 +5807,7 @@ export function createApi(ctx, options) {
         scheduler.resetStageBudget(String(taskId), stage)
       } catch (error) {}
     }
-    if (stageAgents === null) {
+    if (stageCoordinator === null) {
       return { outcome: failure('agent-runtime-unavailable', 'no subagent runtime is attached'), executed: true, summary: { taskId: String(taskId) }, text: decided + ': the round was reset but no ' + kind + ' could be started (no subagent runtime).' }
     }
     const freshRead = await readBoardOrFail(projectPath)
@@ -5688,24 +5820,32 @@ export function createApi(ctx, options) {
       kind === 'reviewer'
         ? reviewBriefFor(freshTask, projectPath)
         : testerBriefFor(freshTask, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
-    const started = kind === 'reviewer' ? await stageAgents.startReviewer(freshTask, brief) : await stageAgents.startTester(freshTask, brief, stageCwdFor(candidate))
-    if (started.ok !== true) {
-      const code = started.code === undefined ? 'start-failed' : String(started.code)
+    // T-223: the round was just reset (deliveredTo null, new round stamp), so the
+    // coordinator can prove there is no child and start the ONE replacement.
+    const cwd = stageCwdFor(candidate)
+    const ensured = await stageCoordinator.ensure(
+      kind,
+      freshTask,
+      brief,
+      Object.assign({ projectPath: projectPath }, cwd === null ? {} : cwd),
+    )
+    if (ensured.ok !== true || (ensured.action !== 'spawned' && ensured.action !== 'reused')) {
+      const code = ensured.code === undefined || ensured.code === null ? 'start-failed' : String(ensured.code)
+      const detail = ensured.message === undefined ? 'the replacement failed to start' : String(ensured.message)
       emitActivity(null, 'error', 'the replacement ' + kind + ' could not be started (' + code + ')', String(taskId), 'system')
       return {
-        outcome: failure(code, String(started.message === undefined ? 'the replacement failed to start' : started.message)),
+        outcome: failure(code, detail),
         executed: true,
         summary: { taskId: String(taskId) },
         text: decided + ': the old ' + kind + ' was released and the round reset, but the new ' + kind + ' could not be started (' + code + '); the card waits for triage.',
       }
     }
-    await recordDeliveredTo(projectPath, String(taskId), kind, { name: started.name, id: started.agentId })
-    emitActivity(null, 'stage-replace', 'released the old ' + kind + ' and started ' + String(started.name) + ' on the same candidate', String(taskId), 'system')
+    emitActivity(null, 'stage-replace', 'released the old ' + kind + ' and started ' + String(ensured.name) + ' on the same candidate', String(taskId), 'system')
     return {
-      outcome: ok({ taskId: String(taskId), agentId: started.agentId, name: started.name }),
+      outcome: ok({ taskId: String(taskId), agentId: ensured.agentId, name: ensured.name }),
       executed: true,
-      summary: { taskId: String(taskId), agentId: started.agentId, name: started.name },
-      text: decided + ': the old ' + kind + ' was released and ' + String(started.name) + ' started a fresh ' + String(stage) + ' round on the same candidate. The worker was not restarted.',
+      summary: { taskId: String(taskId), agentId: ensured.agentId, name: ensured.name },
+      text: decided + ': the old ' + kind + ' was released and ' + String(ensured.name) + ' started a fresh ' + String(stage) + ' round on the same candidate. The worker was not restarted.',
     }
   }
 
@@ -6647,26 +6787,13 @@ export function createApi(ctx, options) {
       // starts the reviewer itself, so a reviewer started here would be replaced
       // immediately (and the refresh skipped for a card this pass served).
       if (task.waitingReason === 'candidate-stale' && task.status === 'reviewing') continue
-      // v3: only an OPEN stage round can be retried; the stage child is started
-      // again and its Session id re-recorded on the card.
+      // v3: only an OPEN stage round can be retried.
       const kind = task.status === 'reviewing' ? 'reviewer' : task.status === 'testing' ? 'tester' : null
-      if (kind === null || stageAgents === null) continue
+      if (kind === null || stageCoordinator === null) continue
       const record = kind === 'reviewer' ? task.review : task.test
       if (record === null || record === undefined || record.status !== 'pending') continue
       const key = String(task.id)
       if (served.has(key) || starting.has(key)) continue
-      // T-217: an ALREADY DELIVERED stage child that is still RUNNING is kept.
-      // A pending round belongs to that child; replacing it on every sweep resets
-      // the round instead of recovering it. Only a card whose child is gone (or
-      // was never delivered) is attempted again.
-      const delivered = record.deliveredTo === null || record.deliveredTo === undefined ? null : record.deliveredTo
-      if (delivered !== null && typeof delivered.id === 'string' && delivered.id !== '') {
-        const live = await liveChildIdsOf(task.ownerSession)
-        if (live !== null && live.has(String(delivered.id))) {
-          served.add(key)
-          continue
-        }
-      }
       starting.add(key)
       served.add(key)
       const candidate = kind === 'tester' ? candidateOf(projectPath, board, task) : null
@@ -6676,9 +6803,14 @@ export function createApi(ctx, options) {
           : testerBriefFor(task, projectPath, candidate, {
               godot: await godotInfoFor(projectPath, candidate === null || candidate === undefined ? null : candidate.path),
             })
-      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text, stageCwdFor(candidate))
-      if (started.ok === true) {
-        await recordDeliveredTo(projectPath, task.id, kind, { name: started.name, id: started.agentId })
+      const cwd = stageCwdFor(candidate)
+      // T-223: the ONE authority decides. A pending round with a delivery this
+      // process can still confirm is kept (T-217: that child owns the round); a
+      // delivery it cannot confirm (plugin reload) is NOT raced with a second
+      // child — the card waits for reconciliation instead. Only a round with no
+      // delivered child is started here.
+      const ensured = await stageCoordinator.ensure(kind, task, text, Object.assign({ projectPath: projectPath }, cwd === null ? {} : cwd))
+      if (ensured.ok === true && ensured.action === 'spawned') {
         await clearWaiting(projectPath, task.id, context)
         recovered.push(task.id)
       }
