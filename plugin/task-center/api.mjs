@@ -2771,6 +2771,23 @@ export function createApi(ctx, options) {
   }
 
   /**
+   * T-225: the agent sidebar's stage rows resolve their session from
+   * review.deliveredTo.id / test.deliveredTo.id, and they read the SUMMARY
+   * (/state), never /task. Keep that identity (name + id) on each open round so
+   * a reviewing/testing/done card still names its real reviewer/tester instead
+   * of showing 未分配. Only these two small strings ride the summary: the `at`
+   * stamp, the generation and the record stay behind /task.
+   */
+  function summaryDeliveredTo(record) {
+    const delivered = record === null || record === undefined ? null : record.deliveredTo
+    if (delivered === null || typeof delivered !== 'object') return null
+    const name = typeof delivered.name === 'string' && delivered.name !== '' ? delivered.name : null
+    const id = typeof delivered.id === 'string' && delivered.id !== '' ? delivered.id : null
+    if (name === null && id === null) return null
+    return { name: name, id: id }
+  }
+
+  /**
    * The snapshot summary: only the fields the panel renders. spec / acceptance /
    * evidence / full history stay behind /task so a 3-second poll does not resend
    * them (81 done cards were ~1.2 MB, half of it detail). A bounded tail of the
@@ -2817,6 +2834,8 @@ export function createApi(ctx, options) {
       at: detail.review.at,
       attempt: detail.review.attempt,
       deliveredAt: detail.review.deliveredAt === undefined ? null : detail.review.deliveredAt,
+      // T-225: the stage rows need the delivery identity, not the record.
+      deliveredTo: summaryDeliveredTo(detail.review),
     }
     const test = detail.test === null || detail.test === undefined ? null : {
       status: detail.test.status,
@@ -2826,6 +2845,8 @@ export function createApi(ctx, options) {
       attempt: detail.test.attempt,
       deliveredAt: detail.test.deliveredAt === undefined ? null : detail.test.deliveredAt,
       evidenceLength: typeof detail.test.evidence === 'string' ? detail.test.evidence.length : 0,
+      // T-225: same compact delivery identity as the review round.
+      deliveredTo: summaryDeliveredTo(detail.test),
     }
     return {
       id: detail.id,

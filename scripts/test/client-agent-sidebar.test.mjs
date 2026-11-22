@@ -82,19 +82,87 @@ const helpers = {
   tcAgentStatusKey: (status) => (status === 'running' ? 'agentStatusRunning' : status === 'failed' ? 'agentStatusFailed' : status === 'idle' ? 'agentStatusIdle' : 'agentStatusUnknown'),
 }
 
-// ── one card that names all four agent sessions ─────────────────────────────
+// ── one card exactly as /state summarizes it ────────────────────────────────
+// T-225: the sidebar renders the /state SUMMARY, never /task. This fixture is
+// the shape summaryOf emits: no history / spec / acceptance / evidence, each
+// stage record reduced to status/by/byName/at/attempt/deliveredAt and the
+// compact deliveredTo ({ name, id }) the three stage rows resolve a real
+// reviewer/tester session from. Building the suite on THIS shape (the T-219
+// fixture used to be the detail shape) is what proves the sidebar reads what
+// the server really sends.
+const SUMMARY_TASK_KEYS = [
+  'id', 'title', 'status', 'state', 'phase', 'blockedReason', 'kind', 'reportSummary',
+  'ownerSession', 'priority', 'dependsOn', 'dependency', 'writeFileCount', 'target', 'base',
+  'targetBase', 'verifyFingerprint', 'branch', 'worktree', 'worktreeError', 'commit',
+  'requiredRole', 'merge', 'review', 'test', 'assignee', 'attempts', 'maxAttempts',
+  'interruptions', 'executors', 'liveExecutors', 'leaseUntil', 'leaseRemaining',
+  'leaseExpired', 'leaseReminder', 'dispatch', 'waitingReason', 'candidate', 'queuePosition',
+  'createdAt', 'updatedAt', 'events',
+]
 const task = {
   id: 'T-212',
   title: 'Agent sidebar',
   status: 'running',
-  assignee: { name: 'worker-t-212', session: 'session-w212' },
-  lastAssignee: { name: 'worker-prev-212', session: 'session-prev212' },
-  review: { status: 'pending', deliveredTo: { id: 'session-rev212', name: 'reviewer-t-212' } },
-  test: { status: 'pending', deliveredTo: { id: 'session-test212', name: 'tester-t-212' } },
+  state: 'running',
+  phase: 'implement',
+  blockedReason: null,
+  kind: 'dev',
+  reportSummary: null,
   ownerSession: 'session-root',
+  priority: 40,
+  dependsOn: [],
+  dependency: { state: 'ready', waitingOn: [], brokenOn: [] },
+  writeFileCount: 1,
+  target: 'feat/task-center-v2',
+  base: 'base-sha',
+  targetBase: 'base-sha',
+  verifyFingerprint: null,
+  branch: 'task/T-212-1',
+  worktree: 'D:/worktrees/T-212-1',
+  worktreeError: null,
+  commit: null,
+  requiredRole: null,
+  merge: null,
+  review: {
+    status: 'pending',
+    by: null,
+    byName: null,
+    at: null,
+    attempt: 1,
+    deliveredAt: null,
+    deliveredTo: { name: 'reviewer-t-212', id: 'session-rev212' },
+  },
+  test: {
+    status: 'pending',
+    by: null,
+    byName: null,
+    at: null,
+    attempt: 1,
+    deliveredAt: null,
+    evidenceLength: 0,
+    deliveredTo: { name: 'tester-t-212', id: 'session-test212' },
+  },
+  assignee: { name: 'worker-t-212', session: 'session-w212' },
+  attempts: 1,
+  maxAttempts: 3,
+  interruptions: 0,
+  executors: [],
+  liveExecutors: [],
+  leaseUntil: null,
+  leaseRemaining: null,
+  leaseExpired: false,
+  leaseReminder: false,
+  dispatch: null,
+  waitingReason: null,
+  candidate: null,
+  queuePosition: null,
+  createdAt: '2026-11-21T05:59:00.000Z',
   updatedAt: '2026-11-21T06:00:00.000Z',
-  history: [],
+  events: [],
 }
+assert.deepEqual(Object.keys(task).sort(), SUMMARY_TASK_KEYS.slice().sort(), 'the fixture is exactly the /state summary contract')
+assert.equal(task.history, undefined, 'the summary carries no history (events only)')
+assert.equal(task.spec, undefined, 'the summary carries no spec')
 const agentTree = {
   available: true,
   root: { id: 'session-root', name: 'lead', role: 'lead', status: 'running', taskId: null },
@@ -344,6 +412,34 @@ const reusedStages = sidebar.stageSessionsOf({
 assert.deepEqual(reusedStages.map((row) => row.session), ['session-same', 'session-same', 'session-same'], 'one session may back several stage rows')
 assert.equal(sidebar.stageSessionsOf(null).every((row) => row.session === null), true, 'no card means no sessions')
 assert.equal(sidebar.stageSessionsOf(undefined).every((row) => row.session === null), true, 'an absent card mints no session')
+
+// T-225: the SUMMARY is all the sidebar ever receives, and it must carry the
+// delivery identity for both open rounds (the reported bug: a done card showed
+// 评审/测试 as 未分配 because summaryOf dropped deliveredTo).
+assert.deepEqual(task.review.deliveredTo, { name: 'reviewer-t-212', id: 'session-rev212' }, 'the summary review keeps deliveredTo')
+assert.deepEqual(task.test.deliveredTo, { name: 'tester-t-212', id: 'session-test212' }, 'the summary test keeps deliveredTo')
+assert.deepEqual(Object.keys(task.review.deliveredTo).sort(), ['id', 'name'], 'the summary adds only name + id, never the record')
+assert.deepEqual(Object.keys(task.test.deliveredTo).sort(), ['id', 'name'], 'the summary adds only name + id, never the evidence')
+assert.deepEqual(
+  sidebar.stageSessionsOf(task).map((row) => row.session),
+  ['session-w212', 'session-rev212', 'session-test212'],
+  'the three rows resolve real sessions from the summary shape',
+)
+const doneSummary = Object.assign({}, task, {
+  status: 'done',
+  state: 'done',
+  phase: null,
+  // A done card: the rounds are CLOSED and their deliveredTo is what is left.
+  review: Object.assign({}, task.review, { status: 'approved', by: '@worker-t-212', byName: 'worker-t-212', at: '2026-11-21T06:10:00.000Z' }),
+  test: Object.assign({}, task.test, { status: 'passed', by: '@tester-t-212', at: '2026-11-21T06:20:00.000Z', evidenceLength: 42 }),
+})
+assert.deepEqual(
+  sidebar.stageSessionsOf(doneSummary).map((row) => row.session),
+  ['session-w212', 'session-rev212', 'session-test212'],
+  'a DONE summary card still names its reviewer/tester instead of 未分配',
+)
+assert.equal(doneSummary.test.evidence, undefined, 'the summary carries no test evidence, only evidenceLength')
+assert.equal(doneSummary.review.record, undefined, 'the summary carries no review record')
 assert.deepEqual(
   Object.keys(sidebar.AGENT_TAB_COPY.zh).sort(),
   Object.keys(sidebar.AGENT_TAB_COPY.en).sort(),
@@ -487,7 +583,6 @@ assert.equal(rootInfo.taskId, 'T-212')
 // forbidden pairing (worker name + root Agent role) never comes back.
 const ownedByRoot = Object.assign({}, task, {
   assignee: { name: 'worker-on-root', session: 'session-root' },
-  lastAssignee: null,
   review: null,
   test: null,
 })
@@ -497,8 +592,14 @@ assert.equal(ownedInfo.role, 'worker', 'the executor role wins over the owner ro
 assert.equal(ownedInfo.roleLabel, '实现', 'a worker name is never paired with the root Agent role')
 assert.equal(ownedInfo.name, 'worker-on-root', 'the root tree name does not leak onto the worker row')
 
-// The previous executor is still a worker session.
-const previousOnly = Object.assign({}, task, { status: 'blocked', assignee: null })
+// The previous executor is still a worker session. `lastAssignee` is a DETAIL
+// field (/state does not carry it), so the summary fixture has none: the case
+// is stated on the card here, and the reader stays robust when it is present.
+const previousOnly = Object.assign({}, task, {
+  status: 'blocked',
+  assignee: null,
+  lastAssignee: { name: 'worker-prev-212', session: 'session-prev212' },
+})
 const previousSnapshot = { tasks: [previousOnly], agentTree: agentTree, activityEvents: null }
 const previousInfo = api.infoOf(previousSnapshot, 'session-prev212', t, 1000)
 assert.equal(previousInfo.role, 'worker', 'lastAssignee is the worker fallback')
@@ -584,8 +685,27 @@ assert.equal(api.openConversation(''), false, 'an empty session is not opened')
 assert.equal(api.openConversation(null), false, 'a missing session is not opened')
 
 // ── exact taskId resolution beats the session fallback ──────────────────────
-const exactPrimary = { id: 'T-A', title: 'primary', status: 'running', assignee: { name: 'worker-a', session: 'session-s' }, lastAssignee: null, review: null, test: null, ownerSession: 'session-owner', updatedAt: '2026-11-21T06:05:00.000Z', history: [] }
-const exactReview = { id: 'T-B', title: 'review card', status: 'reviewing', assignee: null, lastAssignee: null, review: { status: 'pending', deliveredTo: { id: 'session-s', name: 'reviewer-b' } }, test: null, ownerSession: 'session-owner', updatedAt: '2026-11-21T06:06:00.000Z', history: [] }
+const exactPrimary = Object.assign({}, task, {
+  id: 'T-A',
+  title: 'primary',
+  status: 'running',
+  assignee: { name: 'worker-a', session: 'session-s' },
+  review: null,
+  test: null,
+  ownerSession: 'session-owner',
+  updatedAt: '2026-11-21T06:05:00.000Z',
+})
+const exactReview = Object.assign({}, task, {
+  id: 'T-B',
+  title: 'review card',
+  status: 'reviewing',
+  phase: 'review',
+  assignee: null,
+  review: Object.assign({}, task.review, { deliveredTo: { name: 'reviewer-b', id: 'session-s' } }),
+  test: null,
+  ownerSession: 'session-owner',
+  updatedAt: '2026-11-21T06:06:00.000Z',
+})
 const exactSnapshot = { tasks: [exactPrimary, exactReview], agentTree: agentTree, activityEvents: null }
 const bySession = api.infoOf(exactSnapshot, 'session-s', t, 1000)
 assert.equal(bySession.taskId, 'T-A', 'without a param the executor card wins over the review card')
@@ -775,7 +895,6 @@ guideDispose()
     title: id,
     status: status,
     assignee: null,
-    lastAssignee: null,
     review: null,
     test: null,
     ownerSession: 'session-root',
@@ -845,7 +964,6 @@ guideDispose()
     id: 'T-215',
     title: 'decision overlay',
     assignee: { name: 'worker-t-215', session: 'session-w215' },
-    lastAssignee: null,
     review: null,
     test: null,
     ownerSession: 'session-root',
@@ -855,7 +973,6 @@ guideDispose()
     id: 'T-217',
     title: 'merge loop',
     assignee: { name: 'worker-t-217', session: 'session-w217' },
-    lastAssignee: null,
     review: null,
     test: null,
     ownerSession: 'session-root',
@@ -922,8 +1039,8 @@ guideDispose()
 // entry must report false instead of calling that a new tab (no fake success).
 {
   const previous = storeSnapshot
-  const cardA = Object.assign({}, task, { id: 'T-215', assignee: { name: 'worker-t-215', session: 'session-w215' }, lastAssignee: null, review: null, test: null, ownerSession: 'session-root' })
-  const cardB = Object.assign({}, task, { id: 'T-217', assignee: { name: 'worker-t-217', session: 'session-w217' }, lastAssignee: null, review: null, test: null, ownerSession: 'session-root' })
+  const cardA = Object.assign({}, task, { id: 'T-215', assignee: { name: 'worker-t-215', session: 'session-w215' }, review: null, test: null, ownerSession: 'session-root' })
+  const cardB = Object.assign({}, task, { id: 'T-217', assignee: { name: 'worker-t-217', session: 'session-w217' }, review: null, test: null, ownerSession: 'session-root' })
   storeSnapshot = { tasks: [cardA, cardB], agentTree: agentTree, activityEvents: null }
   try {
     const host = createHost({ ignoreMultiple: true })
@@ -969,24 +1086,20 @@ guideDispose()
     title: 'partial stages',
     status: 'reviewing',
     assignee: null,
-    lastAssignee: null,
     review: { status: 'running', deliveredTo: { id: 'session-review-only', name: 'reviewer-part' } },
     test: null,
     ownerSession: 'session-root',
     updatedAt: '2026-11-21T08:00:00.000Z',
-    history: [],
   }
   const reusedCard = {
     id: 'T-REUSE',
     title: 'reused session',
     status: 'testing',
     assignee: { name: 'worker-reuse', session: 'session-reuse' },
-    lastAssignee: null,
     review: { status: 'passed', deliveredTo: { id: 'session-reuse', name: 'worker-reuse' } },
     test: { status: 'running', deliveredTo: { id: 'session-reuse', name: 'worker-reuse' } },
     ownerSession: 'session-root',
     updatedAt: '2026-11-21T08:05:00.000Z',
-    history: [],
   }
   storeSnapshot = { tasks: [partialCard, reusedCard], agentTree: { available: true, root: null, members: [], count: 0, error: null }, activityEvents: null }
   try {

@@ -168,6 +168,118 @@ check(
   check('the list route filters by status', filtered.json().ok === true && filtered.json().tasks.every((task) => task.status === 'pending'))
 }
 
+// ── T-225: /state keeps the stage delivery (name + id), and nothing bigger ──
+// The agent sidebar resolves its develop/review/test rows from the SUMMARY
+// cards /state carries, never from /task. summaryOf used to drop deliveredTo, so
+// a done card showed 评审/测试 as 未分配 although the board held the delivery.
+// This seeds a real board whose rounds also carry detail-class payloads, and
+// asserts the summary keeps exactly the identity the rows need while /task
+// keeps the record.
+{
+  const deliveryRig = createRig({ taskAgents: createFakeTaskAgents() })
+  const AT = '2026-11-21T09:00:00.000Z'
+  const BIG = 'detail-class text that must never ride /state; '.repeat(60)
+  const deliveryCard = {
+    id: 'T-225',
+    title: 'summary keeps the delivery',
+    kind: 'dev',
+    status: 'done',
+    priority: 40,
+    base: 'base-sha',
+    target: 'feat/task-center-v2',
+    branch: 'task/T-225-1',
+    writeFiles: ['plugin/task-center/api.mjs'],
+    verification: { probes: [{ id: 'suite', command: 'npm test' }] },
+    createdAt: '2026-11-20T00:00:00.000Z',
+    updatedAt: AT,
+    history: [{ at: AT, from: 'testing', to: 'done', note: 'passed' }],
+    review: {
+      status: 'approved',
+      by: '@worker-t-225',
+      byName: 'worker-t-225',
+      at: AT,
+      attempt: 1,
+      reasons: BIG,
+      record: { verdict: 'approved', checked: [{ criterion: BIG, method: BIG, result: 'pass' }], findings: [], residualRisks: [BIG] },
+      deliveredTo: { name: 'reviewer-t-225', id: 'session-reviewer-225', at: AT, generation: 3 },
+    },
+    test: {
+      status: 'passed',
+      by: '@tester-t-225',
+      at: AT,
+      attempt: 1,
+      evidence: BIG,
+      record: { verdict: 'passed', probes: [{ id: 'suite', command: 'npm test', exitCode: 0, tail: BIG }], adversarial: [], notes: BIG },
+      deliveredTo: { name: 'tester-t-225', id: 'session-tester-225', at: AT, generation: 2 },
+    },
+    merge: { status: 'merged', base: 'base-sha', target: 'feat/task-center-v2', head: 'head-sha', mergeCommit: 'merge-sha' },
+  }
+  const boardText = JSON.stringify({ version: 1, tasks: [deliveryCard] })
+  seedBoard(deliveryRig.fs, PROJECT, boardText)
+  const deliverySurface = install(deliveryRig)
+
+  // The panel's own poll is the light first paint: assert on THAT answer.
+  const stateRes = await call(deliverySurface, STATE_PATH + '?light=1', {})
+  const stateText = stateRes.text
+  const payload = stateRes.json()
+  const summaryCard = (payload.tasks === undefined ? [] : payload.tasks).filter((task) => task.id === 'T-225')[0]
+  check('T-225 the light /state carries the seeded card', payload.ok === true && payload.metadata.light === true && summaryCard !== undefined, stateText.substring(0, 300))
+  const reviewDelivery = summaryCard === undefined ? undefined : summaryCard.review.deliveredTo
+  const testDelivery = summaryCard === undefined ? undefined : summaryCard.test.deliveredTo
+  check(
+    'T-225 the summary review keeps the real reviewer session',
+    reviewDelivery !== undefined && reviewDelivery !== null && reviewDelivery.name === 'reviewer-t-225' && reviewDelivery.id === 'session-reviewer-225',
+    JSON.stringify(summaryCard === undefined ? null : summaryCard.review),
+  )
+  check(
+    'T-225 the summary test keeps the real tester session',
+    testDelivery !== undefined && testDelivery !== null && testDelivery.name === 'tester-t-225' && testDelivery.id === 'session-tester-225',
+    JSON.stringify(summaryCard === undefined ? null : summaryCard.test),
+  )
+  check(
+    'T-225 the summary adds ONLY name + id (no at / generation)',
+    reviewDelivery !== undefined && testDelivery !== undefined && Object.keys(reviewDelivery).sort().join(',') === 'id,name' && Object.keys(testDelivery).sort().join(',') === 'id,name',
+    JSON.stringify([reviewDelivery, testDelivery]),
+  )
+  check(
+    'T-225 no detail-class review payload rides the summary',
+    summaryCard !== undefined && summaryCard.review.record === undefined && summaryCard.review.reasons === undefined,
+    JSON.stringify(summaryCard === undefined ? null : Object.keys(summaryCard.review)),
+  )
+  check(
+    'T-225 no detail-class test payload rides the summary',
+    summaryCard !== undefined && summaryCard.test.record === undefined && summaryCard.test.evidence === undefined && summaryCard.test.evidenceLength === BIG.length,
+    JSON.stringify(summaryCard === undefined ? null : Object.keys(summaryCard.test)),
+  )
+  check(
+    'T-225 the summary answer stays a fraction of the board',
+    stateText.length < boardText.length,
+    'summary=' + String(stateText.length) + 'B board=' + String(boardText.length) + 'B',
+  )
+
+  // /task still carries the whole record, so the drawer loses nothing.
+  const detailRes = await call(deliverySurface, TASK_PATH + '?id=T-225', {})
+  const detailCard = detailRes.json().task
+  check('T-225 /task still answers the card', detailRes.json().ok === true && detailCard !== undefined, detailRes.text.substring(0, 300))
+  check(
+    'T-225 /task keeps the full deliveredTo (at + generation)',
+    detailCard.review.deliveredTo.at === AT && detailCard.review.deliveredTo.generation === 3 && detailCard.test.deliveredTo.at === AT && detailCard.test.deliveredTo.generation === 2,
+    JSON.stringify([detailCard.review.deliveredTo, detailCard.test.deliveredTo]),
+  )
+  check(
+    'T-225 /task keeps the detail-class payload the summary dropped',
+    detailCard.review.reasons === BIG && detailCard.test.evidence === BIG && detailCard.review.record !== null && detailCard.test.record !== null,
+    JSON.stringify({ reasons: String(detailCard.review.reasons).length, evidence: String(detailCard.test.evidence).length }),
+  )
+  // The ids the client's stageSessionsOf reads (client-agent-sidebar covers the
+  // rows themselves): review.deliveredTo.id / test.deliveredTo.id must be real.
+  check(
+    'T-225 the summary ids are the sessions the sidebar opens',
+    reviewDelivery !== undefined && reviewDelivery.id === 'session-reviewer-225' && testDelivery !== undefined && testDelivery.id === 'session-tester-225',
+  )
+  console.log('PASS  T-225 /state keeps the stage delivery identity; /task keeps the record')
+}
+
 // worktrees
 {
   const res = await call(surface, WORKTREES_PATH, {})
