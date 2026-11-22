@@ -26,11 +26,124 @@ function h(type, props, ...children) {
   return { type, props: Object.assign({}, props, children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) }
 }
 
+// T-227: the tab body owns a refresh timer, so the fake React must be able to
+// MOUNT a component: hooks persist per instance, effects run after the render,
+// and a store notification re-renders the instance through its
+// useSyncExternalStore subscription. A direct `api.Body(...)` call (every other
+// block in this file) still renders statelessly: effects are not queued outside
+// a mount, which keeps the historical single-render assertions unchanged.
+let renderInstance = null
+let renderHookIndex = 0
+
+function sameDeps(left, right) {
+  if (Array.isArray(left) !== true || Array.isArray(right) !== true) return false
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (Object.is(left[index], right[index]) !== true) return false
+  }
+  return true
+}
+
+function useHookSlot(create) {
+  const index = renderHookIndex
+  renderHookIndex += 1
+  const hooks = renderInstance.hooks
+  if (hooks[index] === undefined) hooks[index] = create()
+  return hooks[index]
+}
+
 const React = {
-  useState(initial) { return [typeof initial === 'function' ? initial() : initial, () => {}] },
-  useEffect() {},
-  useReducer(reducer, initial) { return [typeof initial === 'function' ? initial() : initial, () => {}] },
-  useSyncExternalStore(subscribe, getSnapshot) { return getSnapshot() },
+  useState(initial) {
+    const pair = [typeof initial === 'function' ? initial() : initial, () => {}]
+    if (renderInstance === null) return pair
+    return useHookSlot(() => pair)
+  },
+  useEffect(effect, deps) {
+    if (renderInstance === null) return
+    const index = renderHookIndex
+    renderHookIndex += 1
+    const hooks = renderInstance.hooks
+    const previous = hooks[index]
+    if (previous !== undefined) {
+      // The tab's effects all use []; a re-render must not re-run them (that
+      // would double the timers and the loads this task asserts).
+      if (sameDeps(previous.deps, deps)) return
+      if (typeof previous.cleanup === 'function') previous.cleanup()
+    }
+    const slot = { deps: deps === undefined ? null : deps, effect: effect, cleanup: null }
+    hooks[index] = slot
+    renderInstance.pending.push(slot)
+  },
+  useReducer(reducer, initial) {
+    const pair = [typeof initial === 'function' ? initial() : initial, () => {}]
+    if (renderInstance === null) return pair
+    return useHookSlot(() => pair)
+  },
+  useSyncExternalStore(subscribe, getSnapshot) {
+    if (renderInstance === null) return getSnapshot()
+    const instance = renderInstance
+    useHookSlot(() => {
+      let unsubscribe = null
+      if (typeof subscribe === 'function') {
+        try {
+          unsubscribe = subscribe(function () { instance.rerender() })
+        } catch (error) {
+          unsubscribe = null
+        }
+      }
+      return { unsubscribe: unsubscribe }
+    })
+    return getSnapshot()
+  },
+}
+
+/** Mount one tab body, run its effects, and keep its node current on store pushes. */
+function mountBody(component, props) {
+  const instance = {
+    hooks: [],
+    pending: [],
+    node: null,
+    rendering: false,
+    render() {
+      if (this.rendering === true) return this.node
+      this.rendering = true
+      const previousInstance = renderInstance
+      const previousIndex = renderHookIndex
+      renderInstance = this
+      renderHookIndex = 0
+      try {
+        this.node = component(props)
+      } finally {
+        renderInstance = previousInstance
+        renderHookIndex = previousIndex
+        this.rendering = false
+      }
+      const pending = this.pending
+      this.pending = []
+      for (const slot of pending) {
+        if (slot.cleanup !== null) continue
+        const cleanup = slot.effect()
+        slot.cleanup = typeof cleanup === 'function' ? cleanup : null
+      }
+      return this.node
+    },
+    rerender() {
+      this.render()
+    },
+    unmount() {
+      for (const hook of this.hooks) {
+        if (hook === null || hook === undefined || typeof hook !== 'object') continue
+        if (typeof hook.cleanup === 'function') hook.cleanup()
+        if (typeof hook.unsubscribe === 'function') hook.unsubscribe()
+        hook.cleanup = null
+        hook.unsubscribe = null
+      }
+      this.hooks = []
+      this.pending = []
+    },
+  }
+  instance.render()
+  return instance
 }
 
 const copy = {
@@ -1153,6 +1266,263 @@ guideDispose()
   }
 }
 
+// ── T-227: the tab syncs the shared snapshot itself ─────────────────────────
+// Before T-227 the body only subscribed to the store, so a tab opened before a
+// reviewer was delivered kept saying "not assigned" until another surface
+// polled. A mounted body now loads at mount and every 5 s while visible; hidden
+// pauses, unmount clears only its own timer (never store.stopPolling), and a
+// refreshed review.deliveredTo reaches the stage rows without reopening the
+// tab. Both REAL store failure shapes are driven after a good snapshot — the
+// offline/catch copy (project kept) and the payload branch (project null, from
+// the host error body) — and both must keep the last good card; neither may
+// replay it after a project switch.
+{
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  const hadDocument = Object.prototype.hasOwnProperty.call(globalThis, 'document')
+  const realDocument = hadDocument ? globalThis.document : undefined
+  const intervals = new Map()
+  let nextInterval = 1
+  globalThis.setInterval = (callback, ms) => {
+    const id = nextInterval
+    nextInterval += 1
+    intervals.set(id, { callback, ms })
+    return id
+  }
+  globalThis.clearInterval = (id) => { intervals.delete(id) }
+  const tick = () => {
+    for (const entry of Array.from(intervals.values())) entry.callback()
+  }
+
+  const visibilityListeners = new Set()
+  let visibility = 'visible'
+  globalThis.document = {
+    get visibilityState() { return visibility },
+    addEventListener(type, listener) {
+      if (type === 'visibilitychange') visibilityListeners.add(listener)
+    },
+    removeEventListener(type, listener) {
+      if (type === 'visibilitychange') visibilityListeners.delete(listener)
+    },
+  }
+  const setVisibility = (next) => {
+    visibility = next
+    for (const listener of Array.from(visibilityListeners)) listener()
+  }
+
+  function createSyncStore(initial) {
+    let current = initial
+    const subscribers = new Set()
+    const sync = { loads: 0, startPolling: 0, stopPolling: 0 }
+    return {
+      sync,
+      load() {
+        sync.loads += 1
+        return Promise.resolve({ ok: true })
+      },
+      getSnapshot() { return current },
+      subscribe(listener) {
+        subscribers.add(listener)
+        return () => { subscribers.delete(listener) }
+      },
+      startPolling() { sync.startPolling += 1 },
+      stopPolling() { sync.stopPolling += 1 },
+      push(next) {
+        current = next
+        for (const listener of Array.from(subscribers)) listener()
+      },
+    }
+  }
+
+  // A settled /state answer: source 'host', a project and a receipt time, exactly
+  // the fields tcSnapshot/withDecisions write (client/src/15-client-state.part).
+  const goodSnapshot = (deliveredTo, project, receivedAt) => Object.assign({}, snapshot, {
+    source: 'host',
+    project: project,
+    receivedAt: receivedAt,
+    tasks: [Object.assign({}, task, { review: Object.assign({}, task.review, { deliveredTo }) })],
+  })
+  // The store's OFFLINE/CATCH failure branch (client/src/store.cjs): a copy of
+  // the last snapshot, so project and receivedAt are kept, tasks cleared.
+  const failureOf = (good, project) => Object.assign({}, good, {
+    ok: false,
+    source: 'error',
+    message: 'offline',
+    project: project,
+    tasks: [],
+  })
+  // The store's PAYLOAD failure branch (client/src/store.cjs): tcSnapshot is
+  // built from the host error body, which carries no project (routes.mjs), and
+  // tcSnapshot only keeps a STRING project — so this snapshot has project: null
+  // while receivedAt stays the failed answer's.
+  const payloadFailureOf = (good) => ({
+    ok: false,
+    source: 'error',
+    code: 'failed',
+    message: 'failed',
+    project: null,
+    projectRoot: null,
+    tasks: [],
+    agentTree: null,
+    activityEvents: null,
+    receivedAt: good.receivedAt,
+  })
+  const cardWithReviewer = (deliveredTo) => goodSnapshot(deliveredTo, 'D:/project-godot', 1000)
+  const tabProps = { sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-212', 'session-w212') }
+  const mountSync = (syncStore) => {
+    const host = createHost()
+    const view = createView()
+    const disposal = view.mount(host.host, { store: syncStore, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+    return { host, view, disposal, body: mountBody(view.Body, tabProps) }
+  }
+
+  try {
+    // A visible tab refreshes once at mount and again on its 5 s timer; it never
+    // starts or stops the panel's own poll.
+    const visibleStore = createSyncStore(cardWithReviewer(null))
+    const visible = mountSync(visibleStore)
+    assert.equal(visibleStore.sync.loads, 1, 'mounting a visible tab loads the snapshot immediately')
+    assert.equal(visibleStore.sync.startPolling, 0, 'the tab does not start a global poll')
+    assert.equal(visibleStore.sync.stopPolling, 0, 'mounting never stops the panel poll')
+    tick()
+    assert.equal(visibleStore.sync.loads, 2, 'the visible tab refreshes again on the 5 s tick')
+
+    // The review row starts unassigned; a refreshed snapshot that carries
+    // review.deliveredTo re-renders the mounted body into the reviewer row.
+    const beforeRows = stageRowNodes(visible.body.node)
+    assert.equal(beforeRows[1].props['data-agent-stage-has-session'], 'false', 'the review row starts unassigned')
+    assert.ok(JSON.stringify(beforeRows[1]).includes('未分配'), 'the unassigned review row says so')
+    visibleStore.push(goodSnapshot({ name: 'reviewer-t-212', id: 'session-rev212' }, 'D:/project-godot', 2000))
+    const afterRows = stageRowNodes(visible.body.node)
+    assert.equal(afterRows[1].props['data-agent-stage-session'], 'session-rev212', 'a delivered reviewer reaches the review row without reopening the tab')
+    assert.equal(afterRows[1].props['data-agent-stage-has-session'], 'true', 'the review row becomes actionable')
+    assert.ok(JSON.stringify(afterRows[1]).includes('reviewer-t-212'), 'the review row names the delivered reviewer')
+    assert.equal(stageButtonOf(visible.body.node, 'review').props.disabled, false, 'the delivered review row can open its conversation')
+
+    // Unmount clears the tab's own timer and listener, and touches no poller.
+    visible.body.unmount()
+    visible.disposal()
+    tick()
+    assert.equal(visibleStore.sync.loads, 2, 'an unmounted tab never refreshes again')
+    assert.equal(visibleStore.sync.stopPolling, 0, 'unmount never stops the panel poll')
+    assert.equal(visibleStore.sync.startPolling, 0, 'unmount never starts another poll')
+    assert.equal(intervals.size, 0, 'unmount clears every timer the tab created')
+    assert.equal(visibilityListeners.size, 0, 'unmount removes the visibility listener')
+
+    // A hidden tab pauses: no load at mount, no load on the tick. Becoming
+    // visible catches up at once and resumes the 5 s interval.
+    visibility = 'hidden'
+    const hiddenStore = createSyncStore(cardWithReviewer(null))
+    const hidden = mountSync(hiddenStore)
+    assert.equal(hiddenStore.sync.loads, 0, 'a hidden tab does not load at mount')
+    tick()
+    assert.equal(hiddenStore.sync.loads, 0, 'a hidden tab does not load on the tick')
+    setVisibility('visible')
+    assert.equal(hiddenStore.sync.loads, 1, 'becoming visible refreshes immediately')
+    tick()
+    assert.equal(hiddenStore.sync.loads, 2, 'the resumed interval refreshes again')
+    setVisibility('hidden')
+    tick()
+    assert.equal(hiddenStore.sync.loads, 2, 'hiding the document pauses the tab again')
+    hidden.body.unmount()
+    hidden.disposal()
+    assert.equal(intervals.size, 0, 'the hidden tab also releases its timer on unmount')
+
+    // The store's OFFLINE/CATCH failure shape must not blank the tab: a failed
+    // poll after a good one keeps the card, the reviewer and all three rows.
+    visibility = 'visible'
+    const deliveredSnapshot = goodSnapshot({ name: 'reviewer-t-212', id: 'session-rev212' }, 'D:/project-godot', 1000)
+    const failureStore = createSyncStore(deliveredSnapshot)
+    const failureTab = mountSync(failureStore)
+    const goodRows = stageRowNodes(failureTab.body.node)
+    assert.equal(goodRows.length, 3, 'the good snapshot renders the three stage rows')
+    assert.equal(goodRows[1].props['data-agent-stage-session'], 'session-rev212', 'the good snapshot names the reviewer')
+    failureStore.push(failureOf(deliveredSnapshot, 'D:/project-godot'))
+    assert.equal(failureTab.body.node.props['data-agent-task'], 'T-212', 'a failed poll keeps the tab card id')
+    assert.equal(failureTab.body.node.props['data-agent-role'], 'worker', 'a failed poll keeps the tab role')
+    const keptRows = stageRowNodes(failureTab.body.node)
+    assert.equal(keptRows.length, 3, 'a failed poll keeps all three stage rows')
+    assert.equal(keptRows[1].props['data-agent-stage-session'], 'session-rev212', 'a failed poll keeps the delivered reviewer')
+    assert.ok(JSON.stringify(failureTab.body.node).includes('reviewer-t-212'), 'a failed poll keeps the reviewer name')
+    assert.equal(stageButtonOf(failureTab.body.node, 'review').props.disabled, false, 'a failed poll keeps the review conversation actionable')
+
+    // A failure for a DIFFERENT project must not replay the cached card: the
+    // project switch guard (the previous project's rows may never come back).
+    failureStore.push(failureOf(deliveredSnapshot, 'D:/another-project'))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a different project never falls back to the old project card')
+    assert.ok(JSON.stringify(failureTab.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
+
+    // A switch-shaped snapshot (new project id, old board kept, unchanged
+    // receivedAt) must invalidate the cached card, or a later PROJECT-LESS
+    // payload failure for the new project would replay the previous project's
+    // card through the "unknown project may fall back" path.
+    failureStore.push(Object.assign({}, deliveredSnapshot, { project: 'D:/third-project' }))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 3, 'the store switch transient still renders its board')
+    failureStore.push(payloadFailureOf(deliveredSnapshot))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a switch transient cannot seed the last-good cache')
+    failureTab.body.unmount()
+    failureTab.disposal()
+
+    // The OTHER real failure branch: the /state PAYLOAD failure. The host error
+    // body has no project and tcSnapshot keeps only a string project, so this
+    // snapshot has project: null (receivedAt unchanged, tasks cleared). The last
+    // good card must survive this shape as well.
+    const payloadFailure = payloadFailureOf(deliveredSnapshot)
+    assert.equal(payloadFailure.source, 'error')
+    assert.equal(payloadFailure.project, null, 'the payload failure snapshot has no project')
+    assert.equal(payloadFailure.tasks.length, 0)
+    assert.equal(payloadFailure.receivedAt, deliveredSnapshot.receivedAt, 'the payload failure keeps the previous receipt time')
+    const payloadStore = createSyncStore(deliveredSnapshot)
+    const payloadTab = mountSync(payloadStore)
+    payloadStore.push(payloadFailure)
+    assert.equal(payloadTab.body.node.props['data-agent-task'], 'T-212', 'a payload-branch failure keeps the tab card id')
+    assert.equal(payloadTab.body.node.props['data-agent-role'], 'worker', 'a payload-branch failure keeps the tab role')
+    const payloadRows = stageRowNodes(payloadTab.body.node)
+    assert.equal(payloadRows.length, 3, 'a payload-branch failure keeps all three stage rows')
+    assert.equal(payloadRows[1].props['data-agent-stage-session'], 'session-rev212', 'a payload-branch failure keeps the delivered reviewer')
+    assert.ok(JSON.stringify(payloadTab.body.node).includes('reviewer-t-212'), 'a payload-branch failure keeps the reviewer name')
+    assert.equal(stageButtonOf(payloadTab.body.node, 'review').props.disabled, false, 'a payload-branch failure keeps the review conversation actionable')
+    payloadTab.body.unmount()
+    payloadTab.disposal()
+
+    // The load call itself never escapes: a throwing load is caught and a
+    // rejected load never becomes an unhandled rejection. These stores keep a
+    // good snapshot, so this proves error containment, not snapshot retention
+    // (retention is proven above with the real failure shape).
+    const throwingStore = {
+      load() { throw new Error('offline') },
+      getSnapshot() { return deliveredSnapshot },
+      subscribe() { return () => {} },
+    }
+    const throwing = mountSync(throwingStore)
+    assert.doesNotThrow(() => tick(), 'a throwing refresh never escapes the timer')
+    assert.equal(stageRowNodes(throwing.body.node).length, 3, 'a throwing load leaves the rendered snapshot intact')
+    throwing.body.unmount()
+    throwing.disposal()
+
+    let rejectedLoads = 0
+    const rejectingStore = {
+      load() {
+        rejectedLoads += 1
+        return Promise.reject(new Error('offline'))
+      },
+      getSnapshot() { return deliveredSnapshot },
+      subscribe() { return () => {} },
+    }
+    const rejecting = mountSync(rejectingStore)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(rejectedLoads, 1, 'the rejecting load was attempted')
+    assert.equal(stageRowNodes(rejecting.body.node).length, 3, 'a rejected load leaves the rendered snapshot intact')
+    rejecting.body.unmount()
+    rejecting.disposal()
+  } finally {
+    globalThis.setInterval = realSetInterval
+    globalThis.clearInterval = realClearInterval
+    if (hadDocument === true) globalThis.document = realDocument
+    else delete globalThis.document
+  }
+}
+
 // ── 40-tail / shipped bundle carry the same wiring ──────────────────────────
 const TAIL = readFileSync(new URL('../../client/src/40-tail.part', import.meta.url), 'utf8')
 const BUNDLE = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
@@ -1171,5 +1541,18 @@ assert.ok(BUNDLE.includes('sidebar.tabsIn'), 'the shipped bundle verifies the pl
 assert.ok(BUNDLE.includes('hostSessionOf'), 'the shipped bundle resolves the host session')
 assert.ok(BUNDLE.includes('switchToHost(hostSession)'), 'the shipped bundle switches the main view after a verified open')
 assert.ok(BUNDLE.includes('createdTabOf(before, after)'), 'the shipped bundle verifies a NEW tab, not just the kind')
+assert.ok(BUNDLE.includes('AGENT_TAB_SYNC_MS = 5000'), 'the shipped bundle carries the tab 5 s sync interval')
+assert.ok(BUNDLE.includes('useTabSync'), 'the shipped bundle refreshes the tab snapshot itself')
+assert.ok(BUNDLE.includes('visibilitychange'), 'the shipped bundle follows the document visibility')
+assert.ok(BUNDLE.includes('useStableSnapshot'), 'the shipped bundle keeps the last good snapshot through a failed poll')
+assert.ok(BUNDLE.includes('failedSnapshotOf'), 'the shipped bundle recognises the store failure shape')
+assert.ok(BUNDLE.includes('cache.receivedAt = snapshot.receivedAt'), 'the shipped bundle tracks the snapshot generation for the fallback')
 
-console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
+// T-227: the tab owns only its refresh timer; the panel's poll is not its to
+// start or stop, and the sidebar module never calls either method.
+const AGENT_SIDEBAR_SOURCE = readFileSync(new URL('../../client/src/views/agent-sidebar.cjs', import.meta.url), 'utf8')
+assert.equal(AGENT_SIDEBAR_SOURCE.includes('.stopPolling('), false, 'the agent tab never CALLS stopPolling')
+assert.equal(AGENT_SIDEBAR_SOURCE.includes('.startPolling('), false, 'the agent tab never CALLS startPolling')
+assert.ok(AGENT_SIDEBAR_SOURCE.includes('store.load'), 'the agent tab refreshes through the shared store load')
+
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), refreshes the shared snapshot on mount and every 5 s while visible without touching the panel poll (hidden pauses, unmount clears, a delivered reviewer reaches the stage rows, and both real failed-poll shapes (offline copy and project-less payload) keep the last good card while a project switch never replays it), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')

@@ -86,6 +86,26 @@
  *   - the top (agent name, role, status, card, stage, latest activity) is
  *     unchanged. Without `uiWorkspace` the rows are disabled and a note says
  *     why, rather than silently dropping the entries.
+ *
+ * T-227 — a tab follows the board by itself:
+ *
+ *   - the body used to only SUBSCRIBE to the shared store, so a tab opened
+ *     before a reviewer was delivered kept showing "not assigned" until some
+ *     other surface polled. A mounted body now refreshes the shared store once
+ *     at mount and then every 5 s while the document is visible: a hidden tab
+ *     pauses its timer, and a tab that becomes visible again refreshes at once
+ *     instead of waiting up to 5 s;
+ *   - cleanup clears only the timer THIS tab created and never calls
+ *     `store.stopPolling`: the panel's own poll is not this tab's to stop, and
+ *     the tab is not a second global poller either;
+ *   - a failed poll clears the board (`tasks: []`, `source: 'error'`) in two
+ *     shapes: the offline/catch branch copies the last snapshot and keeps its
+ *     project, while the payload branch is built from the host error body and
+ *     has NO project. Rendering either literally erases the card, the stage
+ *     rows and the delivered reviewer. The tab therefore renders the last GOOD
+ *     snapshot for a failure of the project it already shows, and drops that
+ *     snapshot as soon as another project is seen, so a project switch never
+ *     replays the previous project's card.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -93,6 +113,8 @@ const AGENT_TAB_BODY_SLOT = 'sidebar.right.pane.tab'
 const AGENT_TAB_TITLE_SLOT = 'sidebar.right.pane.tab.title'
 const AGENT_TAB_OPEN_ACTION = 'open-agent-sidebar'
 const AGENT_TAB_GUIDE_ORDER = 60
+// T-227: how often a VISIBLE tab refreshes the shared snapshot on its own.
+const AGENT_TAB_SYNC_MS = 5000
 // T-212: the tab's navigation params carry the exact card it was opened from.
 const AGENT_TAB_TASK_PARAM = 'taskId'
 // T-216: the tab opens in the host session, so the agent it must SHOW travels in
@@ -202,6 +224,31 @@ const ACTIVITY_LABEL_KEYS = {
 let bound = null
 
 function noop() {}
+
+/** T-227: a background document must not keep polling; nobody is looking. */
+function tabIsHidden() {
+	return typeof document !== 'undefined' && document !== null && document.visibilityState === 'hidden'
+}
+
+/**
+ * T-227: is this a failed poll? The shared store marks BOTH failure branches
+ * with `source: 'error'` (client/src/store.cjs):
+ *
+ *   - the offline/catch branch copies the last snapshot, so it keeps the
+ *     project and the previous `receivedAt`;
+ *   - the payload branch builds a snapshot from the host error body, which has
+ *     no project, and tcSnapshot only keeps a string project — so that shape has
+ *     `project: null` (and the previous `receivedAt` too).
+ *
+ * Both clear `tasks`, which is why a literal render blanks the tab.
+ */
+function failedSnapshotOf(snapshot) {
+	return isRecord(snapshot) && snapshot.source === 'error'
+}
+
+function projectOf(snapshot) {
+	return isRecord(snapshot) ? textOf(snapshot.project) : null
+}
 
 function readService(scope, name) {
 	if (scope === null || scope === undefined) return null
@@ -670,6 +717,55 @@ function createAgentSidebar(deps) {
 		return pair[0]
 	}
 
+	/**
+	 * T-227: the tab renders the last GOOD snapshot while a poll failure is on
+	 * screen, whichever failure branch the store took.
+	 *
+	 * `receivedAt` identifies the snapshot generation: the store bumps it on every
+	 * successful /state answer, and BOTH failure branches keep the value of the
+	 * answer they failed after. So a failure reuses the cached card only when it is
+	 * the same generation as that card.
+	 *
+	 * A failure carrying a project (the offline branch) must name the project the
+	 * tab already shows. A failure with NO project (the payload branch: the host
+	 * error body has none) cannot be checked that way, so the cache itself tracks
+	 * the last seen project: the moment a snapshot of another project arrives, the
+	 * cached card is dropped. A project switch therefore never replays the previous
+	 * project's card, even if the new project's first load fails, and the cache is
+	 * only replaced by a FRESH answer (same-generation switch snapshots are not
+	 * cached, or the old board would be replayed under the new project id).
+	 */
+	function useStableSnapshot() {
+		const snapshot = useSnapshot()
+		const cache = React.useState(function () { return { good: null, receivedAt: null, project: null } })[0]
+		const cached = cache.good
+		const failed = failedSnapshotOf(snapshot)
+		const project = projectOf(snapshot)
+		// A failure with a known project may reuse the card only for THAT project;
+		// a project-less payload failure relies on the cache being dropped once a
+		// different project is seen (below).
+		const compatible = project === null ? true : project === cache.project
+		const fallback = failed === true && cached !== null && snapshot.receivedAt === cache.receivedAt && compatible === true ? cached : snapshot
+		React.useEffect(function () {
+			if (failed === true) return
+			if (snapshot.receivedAt !== cache.receivedAt) {
+				// A fresh answer is the new last-good for its project.
+				cache.good = snapshot
+				cache.receivedAt = snapshot.receivedAt
+				cache.project = project
+				return
+			}
+			// Same generation, another project: the store's switch snapshot keeps the
+			// old board while only the project id changes. Drop the old card so no
+			// failure can bring it back under the new project.
+			if (project !== cache.project) {
+				cache.good = null
+				cache.project = project
+			}
+		})
+		return fallback
+	}
+
 	function useNow() {
 		const pair = React.useState(function () { return Date.now() })
 		const setNow = pair[1]
@@ -678,6 +774,68 @@ function createAgentSidebar(deps) {
 			return function () { clearInterval(handle) }
 		}, [])
 		return pair[0]
+	}
+
+	/**
+	 * T-227: the tab's own snapshot sync. The body only SUBSCRIBES to the shared
+	 * store, so a tab opened before a reviewer was delivered sat on its opening
+	 * snapshot until some other surface polled. This effect refreshes the store
+	 * once on mount and then every 5 s WHILE THE DOCUMENT IS VISIBLE.
+	 *
+	 * - a hidden document pauses the tab (no interval, no load); becoming visible
+	 *   refreshes at once and resumes the interval;
+	 * - cleanup clears only this tab's timer and its visibility listener. It never
+	 *   stops the panel's polling: that belongs to the panel, and several open
+	 *   tabs share the store's single-flight load;
+	 * - a failed load is swallowed; useStableSnapshot() then keeps the last GOOD
+	 *   card on screen for BOTH store failure shapes (the project-less payload
+	 *   snapshot and the offline copy) unless a project switch intervened.
+	 */
+	function useTabSync() {
+		const store = context !== null ? context.store : null
+		const load = store !== null && store !== undefined && typeof store.load === 'function' ? store.load : null
+		React.useEffect(function () {
+			if (load === null) return undefined
+			let handle = null
+			function refresh() {
+				if (tabIsHidden()) return
+				try {
+					const pending = load.call(store)
+					if (pending !== null && pending !== undefined && typeof pending.then === 'function') pending.then(noop, noop)
+				} catch (error) {
+					/* keep the last snapshot; an offline poll never blanks the tab */
+				}
+			}
+			function stopTimer() {
+				if (handle === null) return
+				if (typeof clearInterval === 'function') clearInterval(handle)
+				handle = null
+			}
+			function startTimer() {
+				if (handle !== null || tabIsHidden() || typeof setInterval !== 'function') return
+				handle = setInterval(refresh, AGENT_TAB_SYNC_MS)
+			}
+			const globalDocument = typeof document === 'undefined' ? null : document
+			function onVisibilityChange() {
+				if (tabIsHidden()) {
+					stopTimer()
+					return
+				}
+				refresh()
+				startTimer()
+			}
+			refresh()
+			startTimer()
+			if (globalDocument !== null && typeof globalDocument.addEventListener === 'function') {
+				globalDocument.addEventListener('visibilitychange', onVisibilityChange)
+			}
+			return function () {
+				stopTimer()
+				if (globalDocument !== null && typeof globalDocument.removeEventListener === 'function') {
+					globalDocument.removeEventListener('visibilitychange', onVisibilityChange)
+				}
+			}
+		}, [])
 	}
 
 	/**
@@ -716,7 +874,7 @@ function createAgentSidebar(deps) {
 
 	function AgentTabTitle(props) {
 		const t = useTranslate()
-		const snapshot = useSnapshot()
+		const snapshot = useStableSnapshot()
 		// T-216: the navigation session is the HOST session; the agent to show is
 		// resolved from the params (or handed over directly by a mounted test).
 		const selection = tabSelectionOf(props)
@@ -728,8 +886,11 @@ function createAgentSidebar(deps) {
 
 	function AgentTabBody(props) {
 		const t = useTranslate()
-		const snapshot = useSnapshot()
+		const snapshot = useStableSnapshot()
 		const now = useNow()
+		// T-227: refresh the shared store from this tab (mount + visible-only 5 s),
+		// before the early return so the hook order never changes between renders.
+		useTabSync()
 		// Read the navigation params before any early return so the injected
 		// tab-info hook is always called in the same order on every render.
 		// T-216: the tab lives in the HOST session, so the agent it names comes
