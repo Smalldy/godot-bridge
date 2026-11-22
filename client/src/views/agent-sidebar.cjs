@@ -98,8 +98,12 @@
  *   - cleanup clears only the timer THIS tab created and never calls
  *     `store.stopPolling`: the panel's own poll is not this tab's to stop, and
  *     the tab is not a second global poller either;
- *   - a failed refresh is swallowed and the last snapshot stays on screen, so
- *     an offline poll never blanks the tab.
+ *   - the store answers a failed poll with the SAME project but `tasks: []`
+ *     and `source: 'error'`; rendering that literally would erase the card,
+ *     the stage rows and the delivered reviewer. The tab therefore renders the
+ *     last GOOD snapshot while a failing snapshot belongs to the same project,
+ *     and drops the fallback on a project switch so the previous project's card
+ *     never comes back.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -222,6 +226,24 @@ function noop() {}
 /** T-227: a background document must not keep polling; nobody is looking. */
 function tabIsHidden() {
 	return typeof document !== 'undefined' && document !== null && document.visibilityState === 'hidden'
+}
+
+/**
+ * T-227: a failed poll, exactly as the shared store shapes it: the project and
+ * the receipt time are kept, the tasks are cleared and `source` is 'error'
+ * (client/src/store.cjs, the failure and offline branches).
+ */
+function failedSnapshotOf(snapshot) {
+	return isRecord(snapshot) && snapshot.source === 'error'
+}
+
+function projectOf(snapshot) {
+	return isRecord(snapshot) ? textOf(snapshot.project) : null
+}
+
+/** T-227: last-good may only stand in for a failure of the SAME project. */
+function sameProjectOf(left, right) {
+	return projectOf(left) === projectOf(right)
 }
 
 function readService(scope, name) {
@@ -691,6 +713,32 @@ function createAgentSidebar(deps) {
 		return pair[0]
 	}
 
+	/**
+	 * T-227: the tab renders the last GOOD snapshot while a poll failure is on
+	 * screen. The real store answers a failed /state with `tasks: []`,
+	 * `source: 'error'`, the SAME project and the SAME receivedAt as the last
+	 * good answer (client/src/store.cjs), so a literal render would lose the card,
+	 * the three stage rows and the delivered reviewer until the next successful
+	 * poll. The fallback is used ONLY for the same project: after a project switch
+	 * the previous project's card must never come back. A snapshot that is not a
+	 * fresh answer is not cached either (a switch keeps the old board while only
+	 * the project id changes, so receivedAt is unchanged), or the next failure
+	 * could replay the previous project's cards under the new project.
+	 */
+	function useStableSnapshot() {
+		const snapshot = useSnapshot()
+		const cache = React.useState(function () { return { good: null } })[0]
+		const cached = cache.good
+		const failed = failedSnapshotOf(snapshot)
+		const fallback = failed === true && cached !== null && sameProjectOf(cached, snapshot) === true ? cached : snapshot
+		React.useEffect(function () {
+			if (failed === true) return
+			if (cached !== null && cached.receivedAt === snapshot.receivedAt) return
+			cache.good = snapshot
+		})
+		return fallback
+	}
+
 	function useNow() {
 		const pair = React.useState(function () { return Date.now() })
 		const setNow = pair[1]
@@ -712,8 +760,9 @@ function createAgentSidebar(deps) {
 	 * - cleanup clears only this tab's timer and its visibility listener. It never
 	 *   stops the panel's polling: that belongs to the panel, and several open
 	 *   tabs share the store's single-flight load;
-	 * - a failed load is swallowed, so the last snapshot stays on screen instead
-	 *   of the tab blanking out (the store itself keeps its board data).
+	 * - a failed load is swallowed; useStableSnapshot() then keeps the last GOOD
+	 *   card on screen when the store publishes its `tasks: []` / `source:'error'`
+	 *   failure snapshot for the same project.
 	 */
 	function useTabSync() {
 		const store = context !== null ? context.store : null
@@ -798,7 +847,7 @@ function createAgentSidebar(deps) {
 
 	function AgentTabTitle(props) {
 		const t = useTranslate()
-		const snapshot = useSnapshot()
+		const snapshot = useStableSnapshot()
 		// T-216: the navigation session is the HOST session; the agent to show is
 		// resolved from the params (or handed over directly by a mounted test).
 		const selection = tabSelectionOf(props)
@@ -810,7 +859,7 @@ function createAgentSidebar(deps) {
 
 	function AgentTabBody(props) {
 		const t = useTranslate()
-		const snapshot = useSnapshot()
+		const snapshot = useStableSnapshot()
 		const now = useNow()
 		// T-227: refresh the shared store from this tab (mount + visible-only 5 s),
 		// before the early return so the hook order never changes between renders.

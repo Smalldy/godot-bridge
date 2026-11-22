@@ -1270,9 +1270,11 @@ guideDispose()
 // Before T-227 the body only subscribed to the store, so a tab opened before a
 // reviewer was delivered kept saying "not assigned" until another surface
 // polled. A mounted body now loads at mount and every 5 s while visible; hidden
-// pauses, unmount clears only its own timer (never store.stopPolling), a failed
-// load keeps the last snapshot, and a refreshed review.deliveredTo reaches the
-// stage rows without reopening the tab.
+// pauses, unmount clears only its own timer (never store.stopPolling), and a
+// refreshed review.deliveredTo reaches the stage rows without reopening the
+// tab. A failed poll is driven with the REAL store shape (tasks: [], source:
+// 'error', same project/receivedAt): the tab must keep the last good card and
+// must NOT replay it after a project switch.
 {
   const realSetInterval = globalThis.setInterval
   const realClearInterval = globalThis.clearInterval
@@ -1331,9 +1333,24 @@ guideDispose()
     }
   }
 
-  const cardWithReviewer = (deliveredTo) => Object.assign({}, snapshot, {
+  // A settled /state answer: source 'host', a project and a receipt time, exactly
+  // the fields tcSnapshot/withDecisions write (client/src/15-client-state.part).
+  const goodSnapshot = (deliveredTo, project, receivedAt) => Object.assign({}, snapshot, {
+    source: 'host',
+    project: project,
+    receivedAt: receivedAt,
     tasks: [Object.assign({}, task, { review: Object.assign({}, task.review, { deliveredTo }) })],
   })
+  // The store's failure branch (client/src/store.cjs): same project and same
+  // receivedAt as the last good answer, tasks cleared, source 'error'.
+  const failureOf = (good, project) => Object.assign({}, good, {
+    ok: false,
+    source: 'error',
+    message: 'offline',
+    project: project,
+    tasks: [],
+  })
+  const cardWithReviewer = (deliveredTo) => goodSnapshot(deliveredTo, 'D:/project-godot', 1000)
   const tabProps = { sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-212', 'session-w212') }
   const mountSync = (syncStore) => {
     const host = createHost()
@@ -1358,7 +1375,7 @@ guideDispose()
     const beforeRows = stageRowNodes(visible.body.node)
     assert.equal(beforeRows[1].props['data-agent-stage-has-session'], 'false', 'the review row starts unassigned')
     assert.ok(JSON.stringify(beforeRows[1]).includes('未分配'), 'the unassigned review row says so')
-    visibleStore.push(cardWithReviewer({ name: 'reviewer-t-212', id: 'session-rev212' }))
+    visibleStore.push(goodSnapshot({ name: 'reviewer-t-212', id: 'session-rev212' }, 'D:/project-godot', 2000))
     const afterRows = stageRowNodes(visible.body.node)
     assert.equal(afterRows[1].props['data-agent-stage-session'], 'session-rev212', 'a delivered reviewer reaches the review row without reopening the tab')
     assert.equal(afterRows[1].props['data-agent-stage-has-session'], 'true', 'the review row becomes actionable')
@@ -1394,10 +1411,44 @@ guideDispose()
     hidden.disposal()
     assert.equal(intervals.size, 0, 'the hidden tab also releases its timer on unmount')
 
-    // A failed refresh keeps the last snapshot: a throwing load never escapes
-    // the timer, and a rejected load never becomes an unhandled rejection.
+    // The REAL store failure shape must not blank the tab: a failed poll after a
+    // good one keeps the card, the delivered reviewer and all three stage rows.
     visibility = 'visible'
-    const deliveredSnapshot = cardWithReviewer({ name: 'reviewer-t-212', id: 'session-rev212' })
+    const deliveredSnapshot = goodSnapshot({ name: 'reviewer-t-212', id: 'session-rev212' }, 'D:/project-godot', 1000)
+    const failureStore = createSyncStore(deliveredSnapshot)
+    const failureTab = mountSync(failureStore)
+    const goodRows = stageRowNodes(failureTab.body.node)
+    assert.equal(goodRows.length, 3, 'the good snapshot renders the three stage rows')
+    assert.equal(goodRows[1].props['data-agent-stage-session'], 'session-rev212', 'the good snapshot names the reviewer')
+    failureStore.push(failureOf(deliveredSnapshot, 'D:/project-godot'))
+    assert.equal(failureTab.body.node.props['data-agent-task'], 'T-212', 'a failed poll keeps the tab card id')
+    assert.equal(failureTab.body.node.props['data-agent-role'], 'worker', 'a failed poll keeps the tab role')
+    const keptRows = stageRowNodes(failureTab.body.node)
+    assert.equal(keptRows.length, 3, 'a failed poll keeps all three stage rows')
+    assert.equal(keptRows[1].props['data-agent-stage-session'], 'session-rev212', 'a failed poll keeps the delivered reviewer')
+    assert.ok(JSON.stringify(failureTab.body.node).includes('reviewer-t-212'), 'a failed poll keeps the reviewer name')
+    assert.equal(stageButtonOf(failureTab.body.node, 'review').props.disabled, false, 'a failed poll keeps the review conversation actionable')
+
+    // A failure for a DIFFERENT project must not replay the cached card: the
+    // project switch guard (the previous project's rows may never come back).
+    failureStore.push(failureOf(deliveredSnapshot, 'D:/another-project'))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a different project never falls back to the old project card')
+    assert.ok(JSON.stringify(failureTab.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
+
+    // A switch-shaped snapshot (new project id, old board kept, unchanged
+    // receivedAt) must not seed the new project cache, or the next failure for
+    // the new project would replay the previous project's card.
+    failureStore.push(Object.assign({}, deliveredSnapshot, { project: 'D:/third-project' }))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 3, 'the store switch transient still renders its board')
+    failureStore.push(failureOf(deliveredSnapshot, 'D:/third-project'))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a switch transient cannot seed the last-good cache')
+    failureTab.body.unmount()
+    failureTab.disposal()
+
+    // The load call itself never escapes: a throwing load is caught and a
+    // rejected load never becomes an unhandled rejection. These stores keep a
+    // good snapshot, so this proves error containment, not snapshot retention
+    // (retention is proven above with the real failure shape).
     const throwingStore = {
       load() { throw new Error('offline') },
       getSnapshot() { return deliveredSnapshot },
@@ -1405,7 +1456,7 @@ guideDispose()
     }
     const throwing = mountSync(throwingStore)
     assert.doesNotThrow(() => tick(), 'a throwing refresh never escapes the timer')
-    assert.equal(stageRowNodes(throwing.body.node)[1].props['data-agent-stage-session'], 'session-rev212', 'a failed refresh keeps the last snapshot on screen')
+    assert.equal(stageRowNodes(throwing.body.node).length, 3, 'a throwing load leaves the rendered snapshot intact')
     throwing.body.unmount()
     throwing.disposal()
 
@@ -1421,7 +1472,7 @@ guideDispose()
     const rejecting = mountSync(rejectingStore)
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(rejectedLoads, 1, 'the rejecting load was attempted')
-    assert.equal(stageRowNodes(rejecting.body.node)[1].props['data-agent-stage-session'], 'session-rev212', 'a rejected refresh keeps the last snapshot too')
+    assert.equal(stageRowNodes(rejecting.body.node).length, 3, 'a rejected load leaves the rendered snapshot intact')
     rejecting.body.unmount()
     rejecting.disposal()
   } finally {
@@ -1453,6 +1504,9 @@ assert.ok(BUNDLE.includes('createdTabOf(before, after)'), 'the shipped bundle ve
 assert.ok(BUNDLE.includes('AGENT_TAB_SYNC_MS = 5000'), 'the shipped bundle carries the tab 5 s sync interval')
 assert.ok(BUNDLE.includes('useTabSync'), 'the shipped bundle refreshes the tab snapshot itself')
 assert.ok(BUNDLE.includes('visibilitychange'), 'the shipped bundle follows the document visibility')
+assert.ok(BUNDLE.includes('useStableSnapshot'), 'the shipped bundle keeps the last good snapshot through a failed poll')
+assert.ok(BUNDLE.includes('failedSnapshotOf'), 'the shipped bundle recognises the store failure shape')
+assert.ok(BUNDLE.includes('sameProjectOf'), 'the shipped bundle guards the last-good fallback by project')
 
 // T-227: the tab owns only its refresh timer; the panel's poll is not its to
 // start or stop, and the sidebar module never calls either method.
@@ -1461,4 +1515,4 @@ assert.equal(AGENT_SIDEBAR_SOURCE.includes('.stopPolling('), false, 'the agent t
 assert.equal(AGENT_SIDEBAR_SOURCE.includes('.startPolling('), false, 'the agent tab never CALLS startPolling')
 assert.ok(AGENT_SIDEBAR_SOURCE.includes('store.load'), 'the agent tab refreshes through the shared store load')
 
-console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), refreshes the shared snapshot on mount and every 5 s while visible without touching the panel poll (hidden pauses, unmount clears, failures keep the last snapshot, a delivered reviewer reaches the stage rows), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), refreshes the shared snapshot on mount and every 5 s while visible without touching the panel poll (hidden pauses, unmount clears, a delivered reviewer reaches the stage rows, and the real failed-poll shape keeps the last good card while a project switch never replays it), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
