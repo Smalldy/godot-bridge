@@ -1947,7 +1947,18 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			// viewport height (not a fixed 86vh guess) and the BODY scrolls while the
 			// footer stays pinned. The overlay inset and the CSS cap share one 24px budget.
 			'.gbt-decisionoverlay{position:fixed;inset:0;background:rgba(15,18,24,.48);display:grid;place-items:center;z-index:120;padding:12px}',
-			'.gbt-decision{width:min(560px,100%);max-height:calc(100dvh - 24px);overflow:auto;overscroll-behavior:contain;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.24),0 2px 8px rgba(0,0,0,.08);padding:18px 18px 0}',
+			// T-226 review: border-box, NOT the UA default content-box. With content-box,
+			// `width:min(560px,100%)` resolves against the overlay's 406px content box and
+			// then ADDS 2*18px padding and the border: a 443px border box at a 430px
+			// window, so the side borders, the rounded corners and part of the internal
+			// scrollbar were clipped. max-height had the same problem in the other axis:
+			// it capped only the content box, so the advertised 24px safe area was never
+			// actually spent. Every companion card (including the compact dock card)
+			// already sets border-box. The plain `vh` declaration is the fallback for an
+			// engine that rejects `dvh` (which would otherwise drop the cap entirely).
+			// scroll-padding-bottom keeps a focused/scrollIntoView target above the
+			// pinned row (row = 10 + 30px button + 16 = 56px; 64 leaves 8px of air).
+			'.gbt-decision{box-sizing:border-box;width:min(560px,100%);max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow:auto;overscroll-behavior:contain;scroll-padding-bottom:64px;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.24),0 2px 8px rgba(0,0,0,.08);padding:18px 18px 0}',
 			'.gbt-decisionhead{display:flex;align-items:flex-start;gap:10px}',
 			'.gbt-decisionhead h2{margin:0;font-size:15px;font-weight:600;flex:1}',
 			'.gbt-decisionsub{margin:2px 0 0;font-size:11.5px;color:var(--dsw-alias-label-secondary);word-break:break-word}',

@@ -739,8 +739,10 @@ console.log('PASS  T-215 a long unbroken writeFiles path wraps inside the 368px 
 // A long spec used to push the action row below the card's visible area: at
 // 430x583 the card scrolled as one block, so the 确认 button only existed after
 // scrolling. The fix is a STICKY footer plus a card that takes the usable
-// viewport height. Node has no layout engine, so this suite locks the two
+// viewport height. Node has no layout engine, so this suite locks the three
 // halves that make the visible guarantee:
+//   - the box-model contract (border-box, so the 406x559 budget is real and the
+//     card cannot spill past the 12px inset / clip its own borders);
 //   - the CSS contract (height budget, sticky declaration, opaque row);
 //   - the DOM contract (the footer is the LAST form node, after every
 //     scrollable field, so bottom:0 pins it to the visible bottom edge).
@@ -781,6 +783,54 @@ console.log('PASS  T-215 a long unbroken writeFiles path wraps inside the 368px 
   assert.equal(Number(cap[1]), EDGE * 2, 'the cap subtracts exactly the overlay inset')
   // 430x583 -> the card may use 559px; the action row pins inside that area.
   assert.equal(VIEWPORT_H - EDGE * 2, 559, 'the card may use 559px of the 583px window')
+
+  // 1a) THE BOX MODEL. The UA default is content-box, and the whole 12px inset
+  //     contract only holds if the declared width/height ARE the border box.
+  //     With content-box, `width:min(560px,100%)` resolves against the overlay's
+  //     406px content box and then ADDS 2*18px padding and the border: a 443px
+  //     border box centered at x=-6.5, so both side borders/rounded corners were
+  //     clipped and the internal scrollbar sat half off-screen. max-height had
+  //     the same defect on the other axis (it capped the content box only), so
+  //     the 24px safe-area budget was never actually spent. This is the review
+  //     fix that turns the sticky-row guarantee into a real 406x559 card.
+  function declarationsOf(ruleText) {
+    const body = ruleText.slice(ruleText.indexOf('{') + 1, ruleText.lastIndexOf('}'))
+    const out = new Map()
+    for (const part of body.split(';')) {
+      const at = part.indexOf(':')
+      if (at < 0) continue
+      out.set(part.slice(0, at).trim(), part.slice(at + 1).trim())
+    }
+    return out
+  }
+  const cardDecl = declarationsOf(cardRule)
+  assert.equal(cardDecl.get('box-sizing'), 'border-box', 'the card border box includes its own padding and border')
+  assert.equal(cardDecl.get('padding'), '18px 18px 0', 'the parsed padding still carries the 18px top / 0 bottom budget')
+  const PAD_INLINE = 18
+  const PAD_TOP = 18
+  const BORDER = 0.5
+  const usableWidth = VIEWPORT_W - EDGE * 2
+  const usableHeight = VIEWPORT_H - EDGE * 2
+  assert.equal(usableWidth, 406, 'a 430px window leaves a 406px card width at the 12px inset')
+  assert.equal(usableHeight, 559, 'a 583px window leaves a 559px card height at the 12px inset')
+  // width:min(560px,100%) — 100% resolves against the overlay's content box.
+  const declaredWidth = Math.min(560, usableWidth)
+  const contentBoxWidth = declaredWidth + PAD_INLINE * 2 + BORDER * 2
+  const renderedBorderBoxWidth = cardDecl.get('box-sizing') === 'border-box' ? declaredWidth : contentBoxWidth
+  assert.equal(renderedBorderBoxWidth, usableWidth, 'at 430px the card border box fits the 406px content box exactly')
+  assert.equal(contentBoxWidth, 443, 'content-box would render a 443px border box')
+  assert.ok(contentBoxWidth > VIEWPORT_W, 'content-box overflows the 430px window itself, not just the inset')
+  // max-height:calc(100dvh - 24px) now caps the BORDER box: 583 - 24 = 559.
+  const cappedHeight = VIEWPORT_H - Number(cap[1])
+  const cappedBorderBoxHeight = cardDecl.get('box-sizing') === 'border-box' ? cappedHeight : cappedHeight + PAD_TOP + BORDER * 2
+  assert.equal(cappedBorderBoxHeight, usableHeight, 'the cap spends the whole 24px budget, not only the content box')
+  assert.equal(EDGE + cappedBorderBoxHeight + EDGE, VIEWPORT_H, 'the capped card still leaves the 12px inset top and bottom')
+  // An engine without dvh must not drop the cap: the vh fallback is declared first.
+  assert.ok(cardRule.includes('max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px)'), 'a vh fallback precedes the dvh cap')
+  // A focused/scrollIntoView target must clear the pinned row (10 + 30px shared
+  // button + 16 = 56px); scroll-padding-bottom is what keeps it visible.
+  assert.ok(/scroll-padding-bottom:64px/.test(cardRule), 'keyboard focus clears the pinned row')
+  assert.ok(64 >= 10 + 30 + 16, 'the scroll padding covers the 56px pinned row')
 
   // 2) The action row is a sticky footer, not a plain row at the end of the flow.
   const footRule = ruleOf('.gbt-decisionfoot')
@@ -878,6 +928,8 @@ console.log('PASS  T-215 a long unbroken writeFiles path wraps inside the 368px 
   // 5) The shipped bundle carries the same rules and the hook (no stale build).
   assert.ok(bundle.includes('data-decision-foot'), 'the rebuilt bundle renders the sticky row hook')
   assert.ok(bundle.includes('max-height:calc(100dvh - 24px)'), 'the rebuilt bundle ships the usable-height cap')
+  assert.ok(bundle.includes('.gbt-decision{box-sizing:border-box'), 'the rebuilt bundle ships the border-box card rule')
+  assert.ok(bundle.includes('scroll-padding-bottom:64px'), 'the rebuilt bundle ships the focus clearance')
   assert.ok(bundle.includes('position:sticky;bottom:0;z-index:2;background:var(--dsw-alias-bg-layer-2)'), 'the rebuilt bundle ships the sticky footer')
   assert.ok(bundle.includes('gbt-decisioncompact .gbt-decisionfoot{padding-bottom:0}'), 'the rebuilt bundle ships the compact override')
 }
