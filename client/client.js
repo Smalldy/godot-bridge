@@ -4458,12 +4458,14 @@ const createTaskStore = (function () {
  *   - cleanup clears only the timer THIS tab created and never calls
  *     `store.stopPolling`: the panel's own poll is not this tab's to stop, and
  *     the tab is not a second global poller either;
- *   - the store answers a failed poll with the SAME project but `tasks: []`
- *     and `source: 'error'`; rendering that literally would erase the card,
- *     the stage rows and the delivered reviewer. The tab therefore renders the
- *     last GOOD snapshot while a failing snapshot belongs to the same project,
- *     and drops the fallback on a project switch so the previous project's card
- *     never comes back.
+ *   - a failed poll clears the board (`tasks: []`, `source: 'error'`) in two
+ *     shapes: the offline/catch branch copies the last snapshot and keeps its
+ *     project, while the payload branch is built from the host error body and
+ *     has NO project. Rendering either literally erases the card, the stage
+ *     rows and the delivered reviewer. The tab therefore renders the last GOOD
+ *     snapshot for a failure of the project it already shows, and drops that
+ *     snapshot as soon as another project is seen, so a project switch never
+ *     replays the previous project's card.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -4589,9 +4591,16 @@ function tabIsHidden() {
 }
 
 /**
- * T-227: a failed poll, exactly as the shared store shapes it: the project and
- * the receipt time are kept, the tasks are cleared and `source` is 'error'
- * (client/src/store.cjs, the failure and offline branches).
+ * T-227: is this a failed poll? The shared store marks BOTH failure branches
+ * with `source: 'error'` (client/src/store.cjs):
+ *
+ *   - the offline/catch branch copies the last snapshot, so it keeps the
+ *     project and the previous `receivedAt`;
+ *   - the payload branch builds a snapshot from the host error body, which has
+ *     no project, and tcSnapshot only keeps a string project — so that shape has
+ *     `project: null` (and the previous `receivedAt` too).
+ *
+ * Both clear `tasks`, which is why a literal render blanks the tab.
  */
 function failedSnapshotOf(snapshot) {
 	return isRecord(snapshot) && snapshot.source === 'error'
@@ -4599,11 +4608,6 @@ function failedSnapshotOf(snapshot) {
 
 function projectOf(snapshot) {
 	return isRecord(snapshot) ? textOf(snapshot.project) : null
-}
-
-/** T-227: last-good may only stand in for a failure of the SAME project. */
-function sameProjectOf(left, right) {
-	return projectOf(left) === projectOf(right)
 }
 
 function readService(scope, name) {
@@ -5075,26 +5079,49 @@ function createAgentSidebar(deps) {
 
 	/**
 	 * T-227: the tab renders the last GOOD snapshot while a poll failure is on
-	 * screen. The real store answers a failed /state with `tasks: []`,
-	 * `source: 'error'`, the SAME project and the SAME receivedAt as the last
-	 * good answer (client/src/store.cjs), so a literal render would lose the card,
-	 * the three stage rows and the delivered reviewer until the next successful
-	 * poll. The fallback is used ONLY for the same project: after a project switch
-	 * the previous project's card must never come back. A snapshot that is not a
-	 * fresh answer is not cached either (a switch keeps the old board while only
-	 * the project id changes, so receivedAt is unchanged), or the next failure
-	 * could replay the previous project's cards under the new project.
+	 * screen, whichever failure branch the store took.
+	 *
+	 * `receivedAt` identifies the snapshot generation: the store bumps it on every
+	 * successful /state answer, and BOTH failure branches keep the value of the
+	 * answer they failed after. So a failure reuses the cached card only when it is
+	 * the same generation as that card.
+	 *
+	 * A failure carrying a project (the offline branch) must name the project the
+	 * tab already shows. A failure with NO project (the payload branch: the host
+	 * error body has none) cannot be checked that way, so the cache itself tracks
+	 * the last seen project: the moment a snapshot of another project arrives, the
+	 * cached card is dropped. A project switch therefore never replays the previous
+	 * project's card, even if the new project's first load fails, and the cache is
+	 * only replaced by a FRESH answer (same-generation switch snapshots are not
+	 * cached, or the old board would be replayed under the new project id).
 	 */
 	function useStableSnapshot() {
 		const snapshot = useSnapshot()
-		const cache = React.useState(function () { return { good: null } })[0]
+		const cache = React.useState(function () { return { good: null, receivedAt: null, project: null } })[0]
 		const cached = cache.good
 		const failed = failedSnapshotOf(snapshot)
-		const fallback = failed === true && cached !== null && sameProjectOf(cached, snapshot) === true ? cached : snapshot
+		const project = projectOf(snapshot)
+		// A failure with a known project may reuse the card only for THAT project;
+		// a project-less payload failure relies on the cache being dropped once a
+		// different project is seen (below).
+		const compatible = project === null ? true : project === cache.project
+		const fallback = failed === true && cached !== null && snapshot.receivedAt === cache.receivedAt && compatible === true ? cached : snapshot
 		React.useEffect(function () {
 			if (failed === true) return
-			if (cached !== null && cached.receivedAt === snapshot.receivedAt) return
-			cache.good = snapshot
+			if (snapshot.receivedAt !== cache.receivedAt) {
+				// A fresh answer is the new last-good for its project.
+				cache.good = snapshot
+				cache.receivedAt = snapshot.receivedAt
+				cache.project = project
+				return
+			}
+			// Same generation, another project: the store's switch snapshot keeps the
+			// old board while only the project id changes. Drop the old card so no
+			// failure can bring it back under the new project.
+			if (project !== cache.project) {
+				cache.good = null
+				cache.project = project
+			}
 		})
 		return fallback
 	}
@@ -5121,8 +5148,8 @@ function createAgentSidebar(deps) {
 	 *   stops the panel's polling: that belongs to the panel, and several open
 	 *   tabs share the store's single-flight load;
 	 * - a failed load is swallowed; useStableSnapshot() then keeps the last GOOD
-	 *   card on screen when the store publishes its `tasks: []` / `source:'error'`
-	 *   failure snapshot for the same project.
+	 *   card on screen for BOTH store failure shapes (the project-less payload
+	 *   snapshot and the offline copy) unless a project switch intervened.
 	 */
 	function useTabSync() {
 		const store = context !== null ? context.store : null

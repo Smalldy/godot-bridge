@@ -1272,9 +1272,10 @@ guideDispose()
 // polled. A mounted body now loads at mount and every 5 s while visible; hidden
 // pauses, unmount clears only its own timer (never store.stopPolling), and a
 // refreshed review.deliveredTo reaches the stage rows without reopening the
-// tab. A failed poll is driven with the REAL store shape (tasks: [], source:
-// 'error', same project/receivedAt): the tab must keep the last good card and
-// must NOT replay it after a project switch.
+// tab. Both REAL store failure shapes are driven after a good snapshot — the
+// offline/catch copy (project kept) and the payload branch (project null, from
+// the host error body) — and both must keep the last good card; neither may
+// replay it after a project switch.
 {
   const realSetInterval = globalThis.setInterval
   const realClearInterval = globalThis.clearInterval
@@ -1341,14 +1342,30 @@ guideDispose()
     receivedAt: receivedAt,
     tasks: [Object.assign({}, task, { review: Object.assign({}, task.review, { deliveredTo }) })],
   })
-  // The store's failure branch (client/src/store.cjs): same project and same
-  // receivedAt as the last good answer, tasks cleared, source 'error'.
+  // The store's OFFLINE/CATCH failure branch (client/src/store.cjs): a copy of
+  // the last snapshot, so project and receivedAt are kept, tasks cleared.
   const failureOf = (good, project) => Object.assign({}, good, {
     ok: false,
     source: 'error',
     message: 'offline',
     project: project,
     tasks: [],
+  })
+  // The store's PAYLOAD failure branch (client/src/store.cjs): tcSnapshot is
+  // built from the host error body, which carries no project (routes.mjs), and
+  // tcSnapshot only keeps a STRING project — so this snapshot has project: null
+  // while receivedAt stays the failed answer's.
+  const payloadFailureOf = (good) => ({
+    ok: false,
+    source: 'error',
+    code: 'failed',
+    message: 'failed',
+    project: null,
+    projectRoot: null,
+    tasks: [],
+    agentTree: null,
+    activityEvents: null,
+    receivedAt: good.receivedAt,
   })
   const cardWithReviewer = (deliveredTo) => goodSnapshot(deliveredTo, 'D:/project-godot', 1000)
   const tabProps = { sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-212', 'session-w212') }
@@ -1411,8 +1428,8 @@ guideDispose()
     hidden.disposal()
     assert.equal(intervals.size, 0, 'the hidden tab also releases its timer on unmount')
 
-    // The REAL store failure shape must not blank the tab: a failed poll after a
-    // good one keeps the card, the delivered reviewer and all three stage rows.
+    // The store's OFFLINE/CATCH failure shape must not blank the tab: a failed
+    // poll after a good one keeps the card, the reviewer and all three rows.
     visibility = 'visible'
     const deliveredSnapshot = goodSnapshot({ name: 'reviewer-t-212', id: 'session-rev212' }, 'D:/project-godot', 1000)
     const failureStore = createSyncStore(deliveredSnapshot)
@@ -1436,14 +1453,37 @@ guideDispose()
     assert.ok(JSON.stringify(failureTab.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
 
     // A switch-shaped snapshot (new project id, old board kept, unchanged
-    // receivedAt) must not seed the new project cache, or the next failure for
-    // the new project would replay the previous project's card.
+    // receivedAt) must invalidate the cached card, or a later PROJECT-LESS
+    // payload failure for the new project would replay the previous project's
+    // card through the "unknown project may fall back" path.
     failureStore.push(Object.assign({}, deliveredSnapshot, { project: 'D:/third-project' }))
     assert.equal(stageRowNodes(failureTab.body.node).length, 3, 'the store switch transient still renders its board')
-    failureStore.push(failureOf(deliveredSnapshot, 'D:/third-project'))
+    failureStore.push(payloadFailureOf(deliveredSnapshot))
     assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a switch transient cannot seed the last-good cache')
     failureTab.body.unmount()
     failureTab.disposal()
+
+    // The OTHER real failure branch: the /state PAYLOAD failure. The host error
+    // body has no project and tcSnapshot keeps only a string project, so this
+    // snapshot has project: null (receivedAt unchanged, tasks cleared). The last
+    // good card must survive this shape as well.
+    const payloadFailure = payloadFailureOf(deliveredSnapshot)
+    assert.equal(payloadFailure.source, 'error')
+    assert.equal(payloadFailure.project, null, 'the payload failure snapshot has no project')
+    assert.equal(payloadFailure.tasks.length, 0)
+    assert.equal(payloadFailure.receivedAt, deliveredSnapshot.receivedAt, 'the payload failure keeps the previous receipt time')
+    const payloadStore = createSyncStore(deliveredSnapshot)
+    const payloadTab = mountSync(payloadStore)
+    payloadStore.push(payloadFailure)
+    assert.equal(payloadTab.body.node.props['data-agent-task'], 'T-212', 'a payload-branch failure keeps the tab card id')
+    assert.equal(payloadTab.body.node.props['data-agent-role'], 'worker', 'a payload-branch failure keeps the tab role')
+    const payloadRows = stageRowNodes(payloadTab.body.node)
+    assert.equal(payloadRows.length, 3, 'a payload-branch failure keeps all three stage rows')
+    assert.equal(payloadRows[1].props['data-agent-stage-session'], 'session-rev212', 'a payload-branch failure keeps the delivered reviewer')
+    assert.ok(JSON.stringify(payloadTab.body.node).includes('reviewer-t-212'), 'a payload-branch failure keeps the reviewer name')
+    assert.equal(stageButtonOf(payloadTab.body.node, 'review').props.disabled, false, 'a payload-branch failure keeps the review conversation actionable')
+    payloadTab.body.unmount()
+    payloadTab.disposal()
 
     // The load call itself never escapes: a throwing load is caught and a
     // rejected load never becomes an unhandled rejection. These stores keep a
@@ -1506,7 +1546,7 @@ assert.ok(BUNDLE.includes('useTabSync'), 'the shipped bundle refreshes the tab s
 assert.ok(BUNDLE.includes('visibilitychange'), 'the shipped bundle follows the document visibility')
 assert.ok(BUNDLE.includes('useStableSnapshot'), 'the shipped bundle keeps the last good snapshot through a failed poll')
 assert.ok(BUNDLE.includes('failedSnapshotOf'), 'the shipped bundle recognises the store failure shape')
-assert.ok(BUNDLE.includes('sameProjectOf'), 'the shipped bundle guards the last-good fallback by project')
+assert.ok(BUNDLE.includes('cache.receivedAt = snapshot.receivedAt'), 'the shipped bundle tracks the snapshot generation for the fallback')
 
 // T-227: the tab owns only its refresh timer; the panel's poll is not its to
 // start or stop, and the sidebar module never calls either method.
@@ -1515,4 +1555,4 @@ assert.equal(AGENT_SIDEBAR_SOURCE.includes('.stopPolling('), false, 'the agent t
 assert.equal(AGENT_SIDEBAR_SOURCE.includes('.startPolling('), false, 'the agent tab never CALLS startPolling')
 assert.ok(AGENT_SIDEBAR_SOURCE.includes('store.load'), 'the agent tab refreshes through the shared store load')
 
-console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), refreshes the shared snapshot on mount and every 5 s while visible without touching the panel poll (hidden pauses, unmount clears, a delivered reviewer reaches the stage rows, and the real failed-poll shape keeps the last good card while a project switch never replays it), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), refreshes the shared snapshot on mount and every 5 s while visible without touching the panel poll (hidden pauses, unmount clears, a delivered reviewer reaches the stage rows, and both real failed-poll shapes (offline copy and project-less payload) keep the last good card while a project switch never replays it), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
