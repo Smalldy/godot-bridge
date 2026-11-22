@@ -427,13 +427,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionColSession: '会话',
 				sessionColCards: '卡数 · 总 / 活跃',
 				sessionColStatus: '状态',
-				sessionDetailTitle: '当前会话详情',
-				sessionDetailProject: '项目',
+				// T-228 review: the ≥1800px SESSION / DETAIL card was removed with the
+				// three-column deck, so only the column label the sessions table uses
+				// remains.
 				sessionDetailCards: '卡（总数 / 进行中）',
-				sessionDetailPreview: '预览',
-				sessionDetailSelected: '已选中',
-				sessionDetailSelectedTitle: '选中会话详情',
-				sessionDetailNoTasks: '该会话暂无任务',
 				sessionsEmpty: '还没有记录到参与该项目的会话',
 				sessionsCurrent: '当前',
 				sessionsStatusLive: '在线',
@@ -1266,13 +1263,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionColSession: 'SESSION',
 				sessionColCards: 'TOTAL / ACTIVE',
 				sessionColStatus: 'STATUS',
-				sessionDetailTitle: 'Session detail',
-				sessionDetailProject: 'Project',
+				// T-228 review: the wide-screen session detail card is gone; this label
+				// is still the sessions table's cards-column tooltip.
 				sessionDetailCards: 'Cards (total / active)',
-				sessionDetailPreview: 'preview',
-				sessionDetailSelected: 'selected',
-				sessionDetailSelectedTitle: 'Selected session detail',
-				sessionDetailNoTasks: 'No cards for this session yet',
 				sessionsEmpty: 'No participating session recorded for this project yet',
 				sessionsCurrent: 'current',
 				sessionsStatusLive: 'live',
@@ -2213,7 +2206,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 // agents) and the board inventory. The inventory gives sessions the full width
 // and splits the bottom row into worktrees + activity, so no card has to
 // truncate at a header just to make room.
-'.gbt-deckgrid{display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr) minmax(0,1fr);grid-template-areas:"rail sessions sessions" "rail worktrees activity";grid-template-rows:minmax(280px,1.1fr) minmax(230px,.95fr);gap:1px;background:var(--deck-line);flex:1 1 auto;min-height:0;width:100%;min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box}',
+// T-228 review: overflow:auto (not hidden) — the fixed row minimums are larger
+// than a short desktop viewport, and the grid must scroll there instead of
+// clipping the lower inventory cards (the previous base grid scrolled too).
+'.gbt-deckgrid{display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr) minmax(0,1fr);grid-template-areas:"rail sessions sessions" "rail worktrees activity";grid-template-rows:minmax(280px,1.1fr) minmax(230px,.95fr);gap:1px;background:var(--deck-line);flex:1 1 auto;min-height:0;width:100%;min-width:0;max-width:100%;overflow:auto;box-sizing:border-box}',
 '.gbt-shiftdeck .gbt-statuscard{border:0;border-radius:0;background:var(--deck-panel);color:var(--deck-text);min-height:0;min-width:0;overflow:hidden;box-shadow:none}',
 '.gbt-deckrail{grid-area:rail;display:flex;flex-direction:column;gap:1px;min-height:0;min-width:0;overflow:auto;background:var(--deck-line)}',
 '.gbt-deckdispatch{flex:0 0 auto;padding:12px 14px 10px;display:flex;flex-direction:column;gap:0;min-width:0;overflow:hidden}',
@@ -2331,35 +2327,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 // agents) first, then sessions, worktrees, activity — the DOM order already
 // reads that way. Every card grows to its content instead of scrolling.
 '@media (max-width:900px){.gbt-statusview.gbt-shiftdeck{height:auto;min-height:100%;overflow:visible}.gbt-deckgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"rail" "sessions" "worktrees" "activity";grid-template-rows:auto;flex:0 0 auto;height:auto;min-height:0;overflow:visible}.gbt-deckrail{overflow:visible}.gbt-deckdispatch,.gbt-deckqueue,.gbt-deckexecutors,.gbt-decksessions,.gbt-deckworktrees{overflow:visible}.gbt-deckqueue,.gbt-deckexecutors{flex:0 0 auto;min-height:0}.gbt-deckqbody,.gbt-deckagentrows,.gbt-deckrows,.gbt-deckwtrows,.gbt-deckactivitybody{overflow:visible}.gbt-deckhead{height:auto;min-height:44px;flex-wrap:wrap;padding:8px 12px}.gbt-deckheadcrumb{display:none}.gbt-deckthead,.gbt-decksessionrow{grid-template-columns:minmax(0,1.4fr) 58px 64px 60px 52px 52px;padding:0 10px}.gbt-deckactivity{min-height:0}.gbt-deckpanelhead,.gbt-deckwtool{padding:0 10px}.gbt-deckwtoolmeta{display:none}}',
-// The session detail card is hidden: the two-column layout has no third column
-// for it (it used to appear only at ≥1800px in the old three-column grid).
-'.gbt-decksessiondetail{display:none}',
-'.gbt-detailbody{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.85fr) minmax(0,1fr);grid-template-rows:auto;align-content:start;gap:10px 12px;padding:12px;min-width:0}',
-'.gbt-detailidentity{display:flex;flex-direction:column;gap:6px;min-width:0;padding-right:12px;border-right:1px solid var(--deck-line)}',
-'.gbt-detailidentityline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}',
-'.gbt-detailidentityline b{font-size:22px;line-height:1;letter-spacing:-.04em;font-weight:500}',
-'.gbt-detailcurrent{font:9.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--deck-lime);border:1px solid var(--tc-accent-line);padding:1px 5px;white-space:nowrap}',
-'.gbt-detailstatus{display:inline-flex;align-items:center;gap:5px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap}',
-'.gbt-detailid{color:var(--deck-dim);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}',
-'.gbt-detailteamcount{color:var(--deck-muted);font-size:10.5px;margin-top:2px}',
-'.gbt-detailfacts{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;min-width:0;padding:8px 12px 0 0;border-top:1px solid var(--deck-line);border-right:1px solid var(--deck-line)}',
-'.gbt-detailfact{min-width:0;border-top:0;padding-top:0}',
-'.gbt-detailpreview{font-size:9px;color:var(--deck-dim);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}',
-'.gbt-detailfact b{display:block;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-'.gbt-detailfact span{display:block;color:var(--deck-dim);font-size:9.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-'.gbt-detailteam{display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}',
-'.gbt-detailpanelhead{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--deck-dim);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding-bottom:4px;border-bottom:1px solid var(--deck-line)}',
-'.gbt-detailpanelhead b{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-muted)}',
-'.gbt-detailmember{display:grid;grid-template-columns:7px minmax(0,1fr) 64px 54px;gap:6px;align-items:center;min-height:22px;border-bottom:1px solid var(--tc-line-soft);min-width:0}',
-'.gbt-detailmembername{font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-detailmemberstate{color:var(--deck-dim);font-size:9.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-detailmembertask{color:var(--deck-muted);font-size:9.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-detailright{display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0;overflow:hidden}',
-'.gbt-detailtasks{display:flex;flex-direction:column;gap:3px;min-width:0;min-height:0;overflow:hidden;border-top:1px solid var(--deck-line);padding-top:7px}',
-'.gbt-detailtask{display:grid;grid-template-columns:54px minmax(0,1fr) 72px;gap:8px;align-items:center;min-height:22px;border-bottom:1px solid var(--tc-line-soft);min-width:0}',
-'.gbt-detailtask b{font-size:10px;font-weight:400;color:var(--deck-lime)}',
-'.gbt-detailtasktitle{font-size:10.5px;color:var(--deck-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
-'.gbt-detailtask em{font-style:normal;color:var(--deck-dim);font-size:9.5px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
 '.gbt-roleseg{display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:7px;background:var(--dsw-alias-bg-layer-2)}',
 '.gbt-rolesegitem{appearance:none;height:26px;padding:0 14px;border:none;border-radius:5px;background:transparent;color:var(--t2,var(--dsw-alias-label-secondary));font:inherit;font-size:12px;font-weight:400;line-height:26px;cursor:pointer;text-decoration:none}',
 '.gbt-rolesegitem:hover{background:var(--dsw-alias-bg-layer-3);color:var(--t1,var(--dsw-alias-label-primary))}',
@@ -8244,7 +8211,12 @@ function createStatusView(deps) {
 			const idText = task.id === undefined || task.id === null ? '—' : String(task.id)
 			const titleText = typeof task.title === 'string' && task.title !== '' ? task.title : '—'
 			const priority = Number.isFinite(task.priority) && task.priority !== 0 ? task.priority : null
-			const lockCount = Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
+			// T-228 review: the two summaries carry DIFFERENT lock shapes. The tasks
+			// list (/state summaryOf) sends writeFileCount; the dispatch queue rows
+			// (service.summary) send the writeFiles ARRAY and no count. Read both so a
+			// READY row keeps its lock chip against a real Host (same fallback as
+			// views/queue.cjs).
+			const lockCount = Array.isArray(task.writeFiles) ? task.writeFiles.length : Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
 			const open = function () { if (typeof props.onOpen === 'function') props.onOpen(idText) }
 			return h(
 				'div',
@@ -8638,34 +8610,11 @@ function createStatusView(deps) {
 			setSessionFilterState(next)
 		}
 		const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
-		// T-173: on wide screens the detail follows the filter, then the current
-		// chat session, then the first visible row; no synthetic session is made.
-		const currentSessionRow = currentSession === null ? null : sessionRows.filter(function (row) { return row.sessionId === currentSession })[0]
-		const detailSession = sessionFilter !== 'all'
-			? sessionRows.filter(function (row) { return row.sessionId === sessionFilter })[0] || null
-			: currentSessionRow !== undefined
-				? currentSessionRow
-				: visibleSessions[0] !== undefined
-					? visibleSessions[0]
-					: sessionRows[0] !== undefined
-						? sessionRows[0]
-						: null
-		const projectRootOf = function (row) {
-			const boardProject = scope !== null && scope.boardProject !== null && scope.boardProject !== undefined && typeof scope.boardProject === 'object' ? scope.boardProject : null
-			if (boardProject !== null && typeof boardProject.root === 'string' && boardProject.root !== '') return boardProject.root
-			if (snapshot.project !== null && snapshot.project !== undefined && typeof snapshot.project === 'object' && typeof snapshot.project.root === 'string') return snapshot.project.root
-			if (typeof snapshot.projectRoot === 'string' && snapshot.projectRoot !== '') return snapshot.projectRoot
-			if (typeof snapshot.project === 'string' && snapshot.project !== '') return snapshot.project
-			return row !== null && typeof row.projectRoot === 'string' ? row.projectRoot : '—'
-		}
-		const detailTaskMatches = detailSession === null ? [] : tasks.filter(function (task) {
-			if (task === null || task === undefined) return false
-			const assigneeSession = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.session === 'string' ? task.assignee.session : null
-			return task.ownerSession === detailSession.sessionId || assigneeSession === detailSession.sessionId
-		})
-		// The card header shows this preview count against the session's real
-		// owned count; never let the preview limit read as the total.
-		const detailTasks = detailTaskMatches.slice(0, 2)
+		// T-228 review: the old ≥1800px SESSION / DETAIL card was built for the
+		// three-column deck that no longer exists. It is REMOVED (not hidden): the
+		// two-column layout has no home for it, and a display:none section would
+		// still ship dead markup and labels. The sessions table stays the session
+		// view; the filter above it still narrows the rows.
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
@@ -8718,60 +8667,6 @@ function createStatusView(deps) {
 				),
 		)
 
-		// T-173: wide-screen detail lives outside the table so the table keeps its
-		// natural row height instead of stretching to fill the center column. It
-		// describes the SESSION (identity, project, cards) and never a team roster.
-		const detailFacts = []
-		const detailCards = detailSession !== null && detailSession.cards !== null && detailSession.cards !== undefined && typeof detailSession.cards === 'object' ? detailSession.cards : {}
-		const detailOwned = Number.isFinite(detailCards.owned) ? detailCards.owned : detailTaskMatches.length
-		const detailActive = Number.isFinite(detailCards.active) ? detailCards.active : 0
-		if (detailSession !== null) {
-			detailFacts.push({ key: 'project', label: t('sessionDetailProject'), value: projectRootOf(detailSession) })
-			detailFacts.push({ key: 'cards', label: t('sessionDetailCards'), value: String(detailOwned) + ' / ' + String(detailActive) })
-		}
-		const detailSessionCard = h('section', {
-			className: 'gbt-statuscard gbt-decksessiondetail',
-			'data-session-detail': detailSession === null ? '' : String(detailSession.sessionId),
-			'data-detail-current': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'true' : 'false',
-			'data-detail-title': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'current' : 'selected',
-		},
-			h('div', { className: 'gbt-deckpanelhead' },
-				h('span', { className: 'gbt-deckeyebrow' }, 'SESSION / DETAIL'),
-				h('h2', null, detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? t('sessionDetailTitle') : t('sessionDetailSelectedTitle')),
-				h('span', { className: 'gbt-deckpanelmeta' }, detailSession === null ? t('sessionsEmpty') : String(detailSession.sessionId)),
-			),
-			detailSession === null
-				? h('div', { className: 'gbt-deckempty', 'data-session-detail-empty': 'true' }, t('sessionsEmpty'))
-				: h('div', { className: 'gbt-detailbody' },
-					h('div', { className: 'gbt-detailidentity' },
-						h('div', { className: 'gbt-detailidentityline' },
-							h('b', { className: 'gbt-mono' }, sessionShortText(detailSession.sessionId)),
-							h('span', { className: 'gbt-detailcurrent' }, detailSession.sessionId === currentSession ? t('sessionsCurrent') : t('sessionDetailSelected')),
-							h('span', { className: 'gbt-detailstatus' }, h('i', { className: 'gbt-deckdot', 'data-on': detailSession.status === 'live' ? 'true' : 'false' }), sessionStatusText(detailSession.status)),
-						),
-						h('div', { className: 'gbt-detailid gbt-mono', title: String(detailSession.sessionId) }, String(detailSession.sessionId)),
-					),
-					h('div', { className: 'gbt-detailfacts' }, detailFacts.map(function (fact) {
-						return h('div', { key: fact.key, className: 'gbt-detailfact', 'data-session-detail-fact': fact.key },
-							h('b', { className: 'gbt-mono', title: String(fact.value) }, String(fact.value)),
-							h('span', null, fact.label))
-					})),
-					h('div', { className: 'gbt-detailright' },
-						h('div', { className: 'gbt-detailtasks', 'data-session-detail-tasks': 'true' },
-							h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'CARDS'), h('span', { className: 'gbt-detailpreview', 'data-detail-preview-label': 'true' }, t('sessionDetailPreview')), h('b', { 'data-detail-preview-count': String(detailTasks.length), 'data-detail-total-count': String(detailOwned) }, String(detailTasks.length) + ' / ' + String(detailOwned))),
-							detailTasks.length === 0
-								? h('div', { className: 'gbt-deckempty' }, t('sessionDetailNoTasks'))
-								: detailTasks.map(function (task) {
-									return h('div', { key: 'detail-task-' + String(task.id), className: 'gbt-detailtask', 'data-session-task': String(task.id) },
-										h('b', { className: 'gbt-mono' }, String(task.id)),
-										h('span', { className: 'gbt-detailtasktitle', title: typeof task.title === 'string' ? task.title : '' }, typeof task.title === 'string' ? task.title : '—'),
-										h('em', { className: 'gbt-mono' }, typeof task.status === 'string' ? task.status : '—'))
-								}),
-						),
-					),
-					),
-				)
-
 		return h(
 			'div',
 			{ className: 'gbt-statusview gbt-shiftdeck', 'data-status': 'cards' },
@@ -8793,7 +8688,6 @@ function createStatusView(deps) {
 				// keeps the board inventory (sessions / worktrees / activity).
 				h('aside', { className: 'gbt-deckrail' }, dispatchCard, queueCard, agentsCard),
 				sessionsCard,
-				detailSessionCard,
 				worktreesCard,
 				activityCard,
 			),

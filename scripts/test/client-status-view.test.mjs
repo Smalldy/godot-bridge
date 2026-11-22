@@ -43,8 +43,11 @@ const tree = {
   error: null,
 }
 // T-228 fixtures: one READY card and two WAITING cards (one waiting on a
-// dependency, one broken) so the queue card renders both halves.
-const readyTask = { id: 'T-10', title: 'ready card', status: 'pending', priority: 80, dependsOn: [], dependency: { state: 'ready', waitingOn: [], brokenOn: [] }, writeFileCount: 2 }
+// dependency, one broken) so the queue card renders both halves. READY rows are
+// snapshot.queue entries — the Host's service.summary() carries the writeFiles
+// ARRAY and no writeFileCount — while WAITING rows come from tasks[] (summaryOf,
+// writeFileCount). Both shapes must yield a lock chip.
+const readyTask = { id: 'T-10', title: 'ready card', status: 'pending', priority: 80, dependsOn: [], dependency: { state: 'ready', waitingOn: [], brokenOn: [] }, writeFiles: ['client/src/a.cjs', 'client/src/b.cjs'] }
 const waitingTask = { id: 'T-11', title: 'waiting card', status: 'pending', priority: 50, dependsOn: [], dependency: { state: 'waiting', waitingOn: ['T-10'], brokenOn: [] }, writeFileCount: 0 }
 const brokenTask = { id: 'T-12', title: 'broken card', status: 'pending', priority: 70, dependsOn: [], dependency: { state: 'broken', waitingOn: [], brokenOn: ['T-9'] }, writeFileCount: 1 }
 const snapshot = {
@@ -107,7 +110,8 @@ assert.ok(queueRows[2].props['data-queue-dependency'] === 'blocked', 'a broken d
 assert.ok(text.includes('P80'), 'the row shows the priority')
 assert.ok(JSON.stringify(queueRows[1]).includes('T-10'), 'the waiting row names what it waits on')
 assert.ok(JSON.stringify(queueRows[2]).includes('T-9'), 'the broken row names what is broken')
-assert.ok(text.includes('🔒 2'), 'the row shows the file-lock count')
+assert.ok(text.includes('🔒 2'), 'a READY queue row derives the lock count from the writeFiles array (real /state queue shape)')
+assert.ok(text.includes('🔒 1'), 'a WAITING task row still reads writeFileCount (real /state tasks shape)')
 assert.ok(text.includes('"data-queue-summary":"true"'), 'the queue head summarises ready / waiting')
 
 // Clicking a queue row opens the same task detail a board card opens.
