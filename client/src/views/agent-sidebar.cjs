@@ -86,6 +86,20 @@
  *   - the top (agent name, role, status, card, stage, latest activity) is
  *     unchanged. Without `uiWorkspace` the rows are disabled and a note says
  *     why, rather than silently dropping the entries.
+ *
+ * T-227 — a tab follows the board by itself:
+ *
+ *   - the body used to only SUBSCRIBE to the shared store, so a tab opened
+ *     before a reviewer was delivered kept showing "not assigned" until some
+ *     other surface polled. A mounted body now refreshes the shared store once
+ *     at mount and then every 5 s while the document is visible: a hidden tab
+ *     pauses its timer, and a tab that becomes visible again refreshes at once
+ *     instead of waiting up to 5 s;
+ *   - cleanup clears only the timer THIS tab created and never calls
+ *     `store.stopPolling`: the panel's own poll is not this tab's to stop, and
+ *     the tab is not a second global poller either;
+ *   - a failed refresh is swallowed and the last snapshot stays on screen, so
+ *     an offline poll never blanks the tab.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -93,6 +107,8 @@ const AGENT_TAB_BODY_SLOT = 'sidebar.right.pane.tab'
 const AGENT_TAB_TITLE_SLOT = 'sidebar.right.pane.tab.title'
 const AGENT_TAB_OPEN_ACTION = 'open-agent-sidebar'
 const AGENT_TAB_GUIDE_ORDER = 60
+// T-227: how often a VISIBLE tab refreshes the shared snapshot on its own.
+const AGENT_TAB_SYNC_MS = 5000
 // T-212: the tab's navigation params carry the exact card it was opened from.
 const AGENT_TAB_TASK_PARAM = 'taskId'
 // T-216: the tab opens in the host session, so the agent it must SHOW travels in
@@ -202,6 +218,11 @@ const ACTIVITY_LABEL_KEYS = {
 let bound = null
 
 function noop() {}
+
+/** T-227: a background document must not keep polling; nobody is looking. */
+function tabIsHidden() {
+	return typeof document !== 'undefined' && document !== null && document.visibilityState === 'hidden'
+}
 
 function readService(scope, name) {
 	if (scope === null || scope === undefined) return null
@@ -681,6 +702,67 @@ function createAgentSidebar(deps) {
 	}
 
 	/**
+	 * T-227: the tab's own snapshot sync. The body only SUBSCRIBES to the shared
+	 * store, so a tab opened before a reviewer was delivered sat on its opening
+	 * snapshot until some other surface polled. This effect refreshes the store
+	 * once on mount and then every 5 s WHILE THE DOCUMENT IS VISIBLE.
+	 *
+	 * - a hidden document pauses the tab (no interval, no load); becoming visible
+	 *   refreshes at once and resumes the interval;
+	 * - cleanup clears only this tab's timer and its visibility listener. It never
+	 *   stops the panel's polling: that belongs to the panel, and several open
+	 *   tabs share the store's single-flight load;
+	 * - a failed load is swallowed, so the last snapshot stays on screen instead
+	 *   of the tab blanking out (the store itself keeps its board data).
+	 */
+	function useTabSync() {
+		const store = context !== null ? context.store : null
+		const load = store !== null && store !== undefined && typeof store.load === 'function' ? store.load : null
+		React.useEffect(function () {
+			if (load === null) return undefined
+			let handle = null
+			function refresh() {
+				if (tabIsHidden()) return
+				try {
+					const pending = load.call(store)
+					if (pending !== null && pending !== undefined && typeof pending.then === 'function') pending.then(noop, noop)
+				} catch (error) {
+					/* keep the last snapshot; an offline poll never blanks the tab */
+				}
+			}
+			function stopTimer() {
+				if (handle === null) return
+				if (typeof clearInterval === 'function') clearInterval(handle)
+				handle = null
+			}
+			function startTimer() {
+				if (handle !== null || tabIsHidden() || typeof setInterval !== 'function') return
+				handle = setInterval(refresh, AGENT_TAB_SYNC_MS)
+			}
+			const globalDocument = typeof document === 'undefined' ? null : document
+			function onVisibilityChange() {
+				if (tabIsHidden()) {
+					stopTimer()
+					return
+				}
+				refresh()
+				startTimer()
+			}
+			refresh()
+			startTimer()
+			if (globalDocument !== null && typeof globalDocument.addEventListener === 'function') {
+				globalDocument.addEventListener('visibilitychange', onVisibilityChange)
+			}
+			return function () {
+				stopTimer()
+				if (globalDocument !== null && typeof globalDocument.removeEventListener === 'function') {
+					globalDocument.removeEventListener('visibilitychange', onVisibilityChange)
+				}
+			}
+		}, [])
+	}
+
+	/**
 	 * The host's optional workspace service, when it can switch the main view.
 	 * T-218: `openIn` also uses it to leave the plugin page for the host session's
 	 * conversation after placing the tab.
@@ -730,6 +812,9 @@ function createAgentSidebar(deps) {
 		const t = useTranslate()
 		const snapshot = useSnapshot()
 		const now = useNow()
+		// T-227: refresh the shared store from this tab (mount + visible-only 5 s),
+		// before the early return so the hook order never changes between renders.
+		useTabSync()
 		// Read the navigation params before any early return so the injected
 		// tab-info hook is always called in the same order on every render.
 		// T-216: the tab lives in the HOST session, so the agent it names comes
