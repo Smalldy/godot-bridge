@@ -229,11 +229,20 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
   await rig.api.perform('start', {}, rig.user)
   const board = await call({ action: 'board' })
   const runningTask = board.tasks.filter((task) => task.status === 'running')[0]
+  // T-231: the board is a summary page — the declared files are detail-class, so
+  // the one card this check needs is fetched through get (the detail read).
+  const runningDetail = await call({ action: 'get', id: runningTask === undefined ? '' : runningTask.id })
+  const declaredFiles = runningDetail.ok === true && Array.isArray(runningDetail.task.writeFiles) ? runningDetail.task.writeFiles : []
+  check(
+    'T-231 a board card carries the file COUNT, not the declared list',
+    runningTask !== undefined && runningTask.writeFileCount === 1 && runningTask.writeFiles === undefined,
+    JSON.stringify(runningTask),
+  )
   const listed = await call({ action: 'locks' })
   check(
     'dispatch locks the running task files automatically',
-    listed.ok === true && runningTask !== undefined && listed.locks.some((lock) => lock.taskId === runningTask.id && runningTask.writeFiles.indexOf(lock.path) >= 0),
-    JSON.stringify({ locks: listed.locks, running: runningTask && runningTask.id }),
+    listed.ok === true && runningTask !== undefined && listed.locks.some((lock) => lock.taskId === runningTask.id && declaredFiles.indexOf(lock.path) >= 0),
+    JSON.stringify({ locks: listed.locks, running: runningTask && runningTask.id, declared: declaredFiles }),
   )
   const manualLock = await call({ action: 'lock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
   check('the lock action is a readable unknown-action refusal', manualLock.error !== undefined && manualLock.code === 'unknown-action', JSON.stringify(manualLock))
@@ -707,6 +716,173 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
     liveBoard.ok === true && !has(liveBoard, 'timings') && losslessShape(liveBoard) && roundTrip(liveBoard) !== null,
     JSON.stringify(Object.keys(liveBoard).slice(0, 12)),
   )
+}
+
+
+// ── T-231: ONE read contract — board is a summary page, list is /list, and a
+// write answers what changed (seq/affected/changed), never the board ─────────
+// T-229 measured the tool board at 4.85 MB and the tool list at 2.64 MB for the
+// same project the panel reads as a light first paint. The tool now reads the
+// SAME TaskSummary page the panel/list read; 'view:"full"' stays as the explicit
+// diagnostic escape hatch.
+{
+  /** A board the size of the reported one: 200 cards with detail-class payloads. */
+  function bigBoardText(count) {
+    const tasks = []
+    for (let index = 1; index <= count; index += 1) {
+      const status = index <= count - 20 ? 'pending' : 'done'
+      tasks.push({
+        id: 'T-' + String(index),
+        title: 'Card ' + String(index) + ' ' + 'the work is done and proven; '.repeat(4),
+        kind: 'dev',
+        status: status,
+        priority: 30,
+        dependsOn: [],
+        writeFiles: ['plugin/task-center/api.mjs'],
+        verification: { probes: [{ id: 'suite', command: 'npm test' }] },
+        spec: 'spec text '.repeat(60),
+        acceptance: 'acceptance text '.repeat(40),
+        evidence: 'evidence '.repeat(30),
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-0' + String((index % 9) + 1) + 'T00:00:00.000Z',
+        history: [
+          { at: '2026-01-02T00:00:00.000Z', from: null, to: 'pending', note: 'created ' + 'note text '.repeat(30) },
+          { at: '2026-01-03T00:00:00.000Z', from: 'pending', to: 'running', note: 'dispatched ' + 'note text '.repeat(30) },
+          { at: '2026-01-04T00:00:00.000Z', from: 'running', to: status, note: 'final ' + 'note text '.repeat(30) },
+        ],
+      })
+    }
+    return JSON.stringify({ version: 1, tasks: tasks })
+  }
+
+  const pageRig = createRig({ allowSpawn: false, taskAgents: createFakeTaskAgents() })
+  pageRig.ctx.tools = {
+    register(tool) {
+      pageRig.tool = tool
+      return tool
+    },
+  }
+  registerTaskTool(pageRig.ctx, { api: pageRig.api })
+  const pageBoardText = bigBoardText(200)
+  seedBoard(pageRig.fs, pageRig.project, pageBoardText)
+  const pageCall = (args) => pageRig.tool.execute(args, { agent: agent })
+
+  const first = await pageCall({ action: 'board' })
+  check(
+    'T-231 the tool board answers a summary PAGE by default',
+    first.ok === true && first.view === 'summary' && first.counts.total === 200 && first.total === 200 && first.tasks.length === 50 && first.count === 50 && typeof first.nextCursor === 'string',
+    JSON.stringify({ view: first.view, count: first.count, total: first.total, next: first.nextCursor }).slice(0, 300),
+  )
+  check(
+    'T-231 a board card is the frozen TaskSummary (no detail-class fields)',
+    first.tasks.every((card) => card.writeFileCount === 1 && card.writeFiles === undefined && card.spec === undefined && card.acceptance === undefined && card.evidence === undefined && card.history === undefined && card.events.length === 2),
+    JSON.stringify(first.tasks[0]).slice(0, 300),
+  )
+  check(
+    'T-231 the default board answer is under 200 KB on a 200-card board',
+    JSON.stringify(first).length < 200000,
+    String(JSON.stringify(first).length) + 'B (board file ' + String(pageBoardText.length) + 'B)',
+  )
+  check(
+    'T-231 the board page keeps the board facts a reader routes on',
+    first.dispatch !== undefined && Array.isArray(first.locks) && Number.isFinite(first.seq) && first.counts.pending === 180 && first.counts.done === 20,
+    JSON.stringify({ seq: first.seq, counts: first.counts, dispatch: first.dispatch === undefined ? null : first.dispatch.state }).slice(0, 300),
+  )
+  {
+    const ids = new Set()
+    let cursor = first.nextCursor
+    let current = first
+    let pages = 1
+    ids.add(current.tasks[0].id)
+    for (const card of current.tasks) ids.add(card.id)
+    while (cursor !== null && pages < 10) {
+      current = await pageCall({ action: 'board', cursor: cursor })
+      if (current.ok !== true) break
+      for (const card of current.tasks) ids.add(card.id)
+      cursor = current.nextCursor
+      pages += 1
+    }
+    check(
+      'T-231 the board cursor pages through every card exactly once',
+      pages === 4 && ids.size === 200 && cursor === null,
+      JSON.stringify({ pages: pages, ids: ids.size, cursor: cursor }).slice(0, 300),
+    )
+  }
+  {
+    const full = await pageCall({ action: 'board', view: 'full' })
+    check(
+      'T-231 view:"full" is the explicit diagnostic escape hatch',
+      full.ok === true && full.view === undefined && full.tasks.length === 200 && typeof full.tasks[0].spec === 'string' && full.agentTree !== undefined && JSON.stringify(full).length > JSON.stringify(first).length * 5,
+      JSON.stringify({ tasks: full.tasks.length, spec: typeof full.tasks[0].spec, bytes: JSON.stringify(full).length }).slice(0, 300),
+    )
+  }
+  {
+    const listed = await pageCall({ action: 'list', limit: 5 })
+    const routePage = await pageRig.api.taskList(pageRig.project, { limit: 5 })
+    check(
+      'T-231 the tool list answers the SAME {tasks,nextCursor,count} shape as /list',
+      listed.ok === true && Array.isArray(listed.tasks) && listed.tasks.length === 5 && typeof listed.nextCursor === 'string' && listed.count === 5 && Object.keys(listed).sort().join(',') === 'count,nextCursor,ok,tasks',
+      JSON.stringify(Object.keys(listed)).slice(0, 240),
+    )
+    check(
+      'T-231 the tool list is byte-identical to the /list handler for the same page',
+      JSON.stringify(listed.tasks) === JSON.stringify(routePage.tasks) && listed.nextCursor === routePage.nextCursor,
+      JSON.stringify({ tool: listed.tasks.length, route: routePage.tasks.length }),
+    )
+    const second = await pageCall({ action: 'list', limit: 5, cursor: listed.nextCursor })
+    check(
+      'T-231 the tool list cursor moves to the next page',
+      second.ok === true && second.tasks.length === 5 && second.tasks[0].id !== listed.tasks[0].id,
+      JSON.stringify({ first: listed.tasks[0].id, second: second.tasks === undefined ? null : second.tasks[0].id }),
+    )
+    const searched = await pageCall({ action: 'list', q: 'Card 123 ', limit: 10 })
+    check(
+      'T-231 the tool list searches like /list (q)',
+      searched.ok === true && searched.tasks.length === 1 && searched.tasks[0].id === 'T-123',
+      JSON.stringify(searched.tasks === undefined ? null : searched.tasks.map((task) => task.id)),
+    )
+    const doneRows = await pageCall({ action: 'list', status: 'done', limit: 200 })
+    check(
+      'T-231 the tool list filters by status and caps the page at the /list limit',
+      doneRows.ok === true && doneRows.tasks.length === 20 && doneRows.tasks.every((task) => task.status === 'done'),
+      JSON.stringify({ count: doneRows.tasks === undefined ? null : doneRows.tasks.length }),
+    )
+    const archived = await pageCall({ action: 'list', archived: true })
+    check(
+      'T-231 archived:true reads the archive instead of the live board',
+      archived.ok === true && archived.tasks.length === 0 && archived.archived === true,
+      JSON.stringify(archived).slice(0, 240),
+    )
+  }
+  {
+    const paused = await pageCall({ action: 'pause' })
+    check(
+      'T-231 a write answer carries seq + affected + changed and NO board',
+      paused.ok === true && Number.isFinite(paused.seq) && paused.affected !== undefined && Array.isArray(paused.affected.ids) && paused.affected.count === paused.affected.ids.length && paused.changed.join(',') === 'board' && paused.board === undefined && paused.snapshot === undefined,
+      JSON.stringify({ seq: paused.seq, affected: paused.affected, changed: paused.changed, board: paused.board === undefined, snapshot: paused.snapshot === undefined }).slice(0, 300),
+    )
+    const updated = await pageCall({ action: 'update', id: 'T-1', priority: 31 })
+    check(
+      'T-231 a one-card write names the card in affected and adds the detail domain',
+      updated.ok === true && updated.affected.ids.indexOf('T-1') >= 0 && updated.affected.count === 1 && updated.changed.join(',') === 'board,detail' && Number.isFinite(updated.seq),
+      JSON.stringify({ seq: updated.seq, affected: updated.affected, changed: updated.changed }).slice(0, 300),
+    )
+  }
+  {
+    const opened = await pageCall({ action: 'openProject', path: pageRig.project })
+    const fullSnapshot = await pageRig.api.snapshot(pageRig.project, { sessionId: 'session-lead' })
+    check(
+      'T-231 the tool openProject answers a summary page + binding facts, not the full board',
+      opened.ok === true && opened.view === 'summary' && opened.tasks.length === 50 && opened.counts.total === 200 && opened.preflight !== undefined && typeof opened.preflight.ok === 'boolean' && opened.registry !== undefined && opened.tasks[0].spec === undefined && opened.agentTree === undefined && opened.worktrees === undefined,
+      JSON.stringify({ view: opened.view, tasks: opened.tasks === undefined ? null : opened.tasks.length, heavy: Object.keys(opened).filter((key) => ['agentTree', 'worktrees', 'environment', 'roles', 'activityEvents'].indexOf(key) >= 0) }).slice(0, 300),
+    )
+    check(
+      'T-231 the tool openProject answer is a fraction of the full snapshot',
+      JSON.stringify(opened).length * 5 < JSON.stringify(fullSnapshot).length,
+      'openProject=' + String(JSON.stringify(opened).length) + 'B full=' + String(JSON.stringify(fullSnapshot).length) + 'B',
+    )
+  }
+  pageRig.scheduler.dispose()
 }
 
 if (typeof disposer === 'function') disposer()

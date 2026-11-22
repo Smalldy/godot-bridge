@@ -61,7 +61,7 @@ function performAs(agentId, name, action, payload) {
 }
 
 async function boardTask(id) {
-  const snap = await rig.action('board')
+  const snap = await rig.action('board', { view: 'full' })
   assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 400))
   return snap.tasks.filter((entry) => entry.id === id)[0]
 }
@@ -482,7 +482,7 @@ check('a bare legacy panel approveReview is still attributed as the human overri
     },
   })
   async function conflictBoardTask(id) {
-    const snap = await conflictRig.action('board')
+    const snap = await conflictRig.action('board', { view: 'full' })
     assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 400))
     return snap.tasks.filter((entry) => entry.id === id)[0]
   }
@@ -572,7 +572,7 @@ for (const outcome of ['conflict', 'failed']) {
     },
   })
   async function candidateBoardTask(id) {
-    const snap = await candidateRig.action('board')
+    const snap = await candidateRig.action('board', { view: 'full' })
     assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 400))
     return snap.tasks.filter((entry) => entry.id === id)[0]
   }
@@ -738,7 +738,9 @@ function createSweepRig(options) {
   const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, merger: opts.merger, taskAgents: opts.taskAgents, autoMerge: true })
   seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: opts.cards.length + 1, dispatch: { state: 'running' }, tasks: opts.cards }))
   async function card(id) {
-    const snap = await api.perform('board', {}, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
+    // T-231: these checks read the DETAIL-class stage records (deliveredTo.generation,
+    // merge.artifact), so they ask for the explicit full view.
+    const snap = await api.perform('board', { view: 'full' }, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
     assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 600))
     return snap.tasks.filter((entry) => entry.id === id)[0]
   }

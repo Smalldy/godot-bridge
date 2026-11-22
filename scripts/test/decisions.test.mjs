@@ -270,7 +270,7 @@ function check(label, condition, detail) {
   const task = await createTask(rig, { title: 'stage dev' })
   const dependent = await createTask(rig, { title: 'stage dev dependent', dependsOn: [task.id] })
   await rig.action('start')
-  let row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  let row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('the dev stage starts on a live worker', row.status === 'running' && row.assignee !== null, String(row.status))
   const workerId = row.assignee.session
   // One full slice of silence, then the host asks.
@@ -283,7 +283,7 @@ function check(label, condition, detail) {
   check('the dev question defaults to continue', question !== undefined && question.defaultOption === 'continue', JSON.stringify(question === undefined ? null : question.defaultOption))
   check('the dev question offers continue/retry/cancel/cancel-tree', question !== undefined && question.options.map((option) => option.id).join(',') === 'continue,retry-dev,cancel,cancel-tree', JSON.stringify(question === undefined ? null : question.options.map((option) => option.id)))
   check('the destructive retry needs the confirmation word', question !== undefined && question.options.filter((option) => option.id === 'retry-dev')[0].danger === true, JSON.stringify(question === undefined ? null : question.options))
-  row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('the card keeps running while the question is pending', row.status === 'running', String(row.status))
   check('the question names the card and the stage', question !== undefined && question.taskId === task.id && question.eventLabel === '开发超时' && question.body.indexOf('当前阶段：开发') >= 0, JSON.stringify({ taskId: question === undefined ? null : question.taskId, body: question === undefined ? null : question.body }))
   check('the dev question lists the chained downstream cards', question !== undefined && question.body.indexOf('下游：1 张卡') >= 0 && question.body.indexOf('└─ ' + dependent.id) >= 0, JSON.stringify(question === undefined ? null : question.body))
@@ -291,7 +291,7 @@ function check(label, condition, detail) {
 
   const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'continue' })
   check('a human continue is executed once', answered.ok === true && answered.applied !== null && answered.applied.executed === true, JSON.stringify(answered.applied))
-  row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('continue keeps the worker and the worktree', row.status === 'running' && row.assignee.session === workerId && row.worktree === row.worktree, JSON.stringify({ status: row.status, worker: row.assignee.session }))
   check('the explicit continue is written to the history', row.history.some((entry) => String(entry.note).indexOf('人工选择继续') >= 0), JSON.stringify(row.history.map((entry) => entry.note)))
   const again = await rig.action('decisionAnswer', { decisionId: question.id, option: 'retry-dev' })
@@ -317,7 +317,7 @@ function check(label, condition, detail) {
   await rig.action('start')
   const submitted = await rig.action('submit', { id: task.id, evidence: 'ready' })
   check('submit opens the review round', submitted.ok === true, JSON.stringify(submitted))
-  const reviewing = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const reviewing = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   const oldReviewer = String(reviewing.review.deliveredTo.id)
   taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
   tick += 26 * 60 * 1000
@@ -335,7 +335,7 @@ function check(label, condition, detail) {
   check('the old reviewer is released BEFORE the new one starts', releaseIndex >= 0 && startIndex > releaseIndex, JSON.stringify(taskAgents.calls.map((call) => call.kind + ':' + String(call.agentId === undefined ? call.taskId : call.agentId))))
   check('the old reviewer is gone from the live tree', taskAgents.live.has(oldReviewer) === false, JSON.stringify(Array.from(taskAgents.live)))
   check('exactly one new reviewer was started', taskAgents.calls.filter((call) => call.kind === 'startReviewer').length === startsBefore + 1, String(taskAgents.calls.filter((call) => call.kind === 'startReviewer').length))
-  const afterReplace = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const afterReplace = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('the card keeps its review phase on a new round', afterReplace.status === 'reviewing' && afterReplace.review.attempt === reviewing.review.attempt + 1, JSON.stringify({ status: afterReplace.status, attempt: afterReplace.review.attempt }))
   check('the new round records the new reviewer', afterReplace.review.deliveredTo !== null && afterReplace.review.deliveredTo.id !== oldReviewer, JSON.stringify(afterReplace.review.deliveredTo))
   check('the replacement is written to the history', afterReplace.history.some((entry) => String(entry.note).indexOf('replaced the reviewer') >= 0), JSON.stringify(afterReplace.history.map((entry) => entry.note)))
@@ -353,7 +353,7 @@ function check(label, condition, detail) {
   const task = await createTask(rig, { title: 'stage review live' })
   await rig.action('start')
   await rig.action('submit', { id: task.id, evidence: 'ready' })
-  const reviewing = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const reviewing = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   const oldReviewer = String(reviewing.review.deliveredTo.id)
   taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
   tick += 26 * 60 * 1000
@@ -364,7 +364,7 @@ function check(label, condition, detail) {
   const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'replace' })
   check('a still-live old reviewer refuses the replacement', answered.ok === true && answered.applied.executed === false && answered.applied.code === 'stage-agent-still-live', JSON.stringify(answered.applied))
   check('no second reviewer is started while the old one lives', taskAgents.calls.filter((call) => call.kind === 'startReviewer').length === startsBefore, String(taskAgents.calls.filter((call) => call.kind === 'startReviewer').length))
-  const after = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const after = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('the refused replacement leaves the card untouched', after.review.deliveredTo.id === oldReviewer && after.review.attempt === reviewing.review.attempt, JSON.stringify(after.review))
   // The real facade can still release it (the test only needed one refused pass).
   check('the old reviewer really is still live in this scenario', taskAgents.live.has(oldReviewer) === true, JSON.stringify(Array.from(taskAgents.live)))
@@ -402,7 +402,7 @@ function check(label, condition, detail) {
   check('the escalated event ask is a pending decision', requested.ok === true && requested.decision.status === 'pending', JSON.stringify(requested))
   const blocked = await rig.action('decisionAnswer', { decisionId: 'stage-ask-T-1-merge-conflict', option: 'block' })
   check('a human block on the escalation is executed', blocked.ok === true && blocked.applied.executed === true, JSON.stringify(blocked.applied))
-  const row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('the escalation block puts the card in triage', row.status === 'blocked', String(row.status))
   check('the block reason is on the history', row.history.some((entry) => String(entry.note).indexOf('escalation decision') >= 0), JSON.stringify(row.history.map((entry) => entry.note)))
 }
@@ -417,7 +417,7 @@ function check(label, condition, detail) {
   const rig = createRig({ now: () => tick, taskAgents: taskAgents, git: git })
   const task = await createTask(rig, { title: 'retry-dev executes', writeFiles: [] })
   await rig.action('start')
-  const running = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const running = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   const workerId = String(running.assignee.session)
   taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
   tick += 26 * 60 * 1000
@@ -426,7 +426,7 @@ function check(label, condition, detail) {
   const question = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'dev-timeout')[0] : undefined
   check('a dev timeout asks before retry-dev (setup)', question !== undefined, JSON.stringify(pending.pending.map((decision) => decision.eventKey)))
   const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'retry-dev', confirm: 'DELETE' })
-  const after = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const after = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('retry-dev is executed', answered.ok === true && answered.applied !== null && answered.applied.executed === true && answered.applied.ok !== false, JSON.stringify(answered.applied))
   check('retry-dev puts the card back in the todo queue', after.status === 'pending' && after.assignee === null, JSON.stringify({ status: after.status, assignee: after.assignee }))
   check('retry-dev stops the old worker', taskAgents.live.has(workerId) === false, JSON.stringify(Array.from(taskAgents.live)))
@@ -450,7 +450,7 @@ function check(label, condition, detail) {
   const pending = await rig.api.decisions.pending(PROJECT)
   const question = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'dev-timeout')[0] : undefined
   const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'retry-dev', confirm: 'DELETE' })
-  const after = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const after = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   const message = String(answered.applied === null || answered.applied === undefined ? '' : answered.applied.message)
   check('retry-dev still requeues the card when removal failed', after.status === 'pending' && after.assignee === null, JSON.stringify({ status: after.status, assignee: after.assignee }))
   check('retry-dev reports the retry as executed', answered.ok === true && answered.applied.executed === true, JSON.stringify(answered.applied && answered.applied.executed))
@@ -468,7 +468,7 @@ function check(label, condition, detail) {
   const task = await createTask(rig, { title: 'replace race' })
   await rig.action('start')
   await rig.action('submit', { id: task.id, evidence: 'ready' })
-  const reviewing = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const reviewing = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   const oldReviewer = String(reviewing.review.deliveredTo.id)
   const startsBefore = taskAgents.calls.filter((call) => call.kind === 'startReviewer').length
   taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
@@ -502,7 +502,7 @@ function check(label, condition, detail) {
     return await realRelease.call(taskAgents, agentId)
   }
   const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'replace' })
-  const after = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const after = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check('the late verdict really lands in the race window (setup)', verdictLanded === true, JSON.stringify(answered.applied))
   check('replace refuses after the verdict landed (stage-closed)', answered.ok === true && answered.applied.executed === false && answered.applied.code === 'stage-closed', JSON.stringify(answered.applied))
   check('the approved review verdict survives the refused replace', after.review !== null && after.review.status === 'approved', JSON.stringify(after.review))
@@ -700,9 +700,9 @@ async function patchTaskRow(rig, id, mutate) {
   )
 
   await rig.action('decisionPolicy', { scope: 'project', events: { create: { defaultOption: 'cancel' } } })
-  const before = (await rig.action('board')).tasks.length
+  const before = (await rig.action('board', { view: 'full' })).tasks.length
   const declined = await rig.api.perform('create', { title: 'declined card', verification: PROBES }, agentContext('auto'))
-  const after = (await rig.action('board')).tasks.length
+  const after = (await rig.action('board', { view: 'full' })).tasks.length
   check(
     'T-198 a notify default of 取消创建 declines the action instead of creating',
     declined.ok === false && declined.code === 'policy-default' && declined.policy.option === 'cancel' && declined.policy.mode === 'notify',
@@ -753,7 +753,7 @@ async function patchTaskRow(rig, id, mutate) {
   tick += 26 * 60 * 1000
   await rig.settle()
   let pending = await rig.api.decisions.pending(PROJECT)
-  let row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  let row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check(
     'T-198 notify applies the timeout default without a modal',
     pending.ok === true && pending.pending.filter((decision) => decision.eventKey === 'dev-timeout').length === 0 && row.status === 'running',
@@ -769,7 +769,7 @@ async function patchTaskRow(rig, id, mutate) {
   // The configured limit (2) blocks on the SECOND consecutive default-continue.
   tick += 26 * 60 * 1000
   await rig.settle()
-  row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check(
     'T-198 the configured consecutive limit blocks the card',
     row.status === 'blocked' && row.history.some((entry) => String(entry.note).indexOf('连续 2 次阶段超时默认继续') >= 0),
@@ -790,7 +790,7 @@ async function patchTaskRow(rig, id, mutate) {
   tick += 26 * 60 * 1000
   await rig.settle()
   const pending = await rig.api.decisions.pending(PROJECT)
-  const row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check(
     'T-198 silent applies the default without a modal',
     pending.ok === true && pending.pending.length === 0 && row.status === 'running',
@@ -866,7 +866,7 @@ async function patchTaskRow(rig, id, mutate) {
   })
   await rig.settle()
   const pending2 = await rig.api.decisions.pending(PROJECT)
-  const row2 = (await rig.action('board')).tasks.filter((entry) => entry.id === task2.id)[0]
+  const row2 = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task2.id)[0]
   check(
     'T-198 a silent event never asks',
     pending2.ok === true && pending2.pending.filter((decision) => decision.eventKey === 'worker-lost' && decision.taskId === task2.id).length === 0,
@@ -962,7 +962,7 @@ async function patchTaskRow(rig, id, mutate) {
     tick += 121 * 1000
     await rig.settle()
   }
-  const row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const row = (await rig.action('board', { view: 'full' })).tasks.filter((entry) => entry.id === task.id)[0]
   check(
     'T-198 the ask question body shows the configured limit',
     firstQuestion !== undefined && firstQuestion.body.indexOf('连续超时：0/5') >= 0,

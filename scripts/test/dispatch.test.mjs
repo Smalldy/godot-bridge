@@ -47,7 +47,7 @@ async function patchTask(rig, id, change) {
 }
 
 async function boardOf(rig) {
-  const result = await rig.action('board')
+  const result = await rig.action('board', { view: 'full' })
   if (result.ok !== true) throw new Error('board failed: ' + JSON.stringify(result))
   return result
 }
@@ -554,7 +554,7 @@ async function boardOf(rig) {
     await rig.settle()
     const submitted = await rig.action('submit', { id: card.id, evidence: 'ready for review' })
     const snapshot = async () => {
-      const snap = await rig.action('board')
+      const snap = await rig.action('board', { view: 'full' })
       return snap.tasks.filter((entry) => entry.id === card.id)[0]
     }
     const afterSubmit = await snapshot()
@@ -614,7 +614,7 @@ async function boardOf(rig) {
     await rig.settle()
     await rig.action('submit', { id: card.id, evidence: 'ready for review' })
     const snapshot = async () => {
-      const snap = await rig.action('board')
+      const snap = await rig.action('board', { view: 'full' })
       return snap.tasks.filter((entry) => entry.id === card.id)[0]
     }
     const row = await snapshot()

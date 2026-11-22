@@ -729,12 +729,12 @@ export function createApi(ctx, options) {
     detailOf: detailOf,
     candidateOf: candidateOf,
     callerSessionId: callerSessionId,
-    // T-230: the tool list projects its page through the SAME read model and the
-    // same per-request view /state and /list use, so the two clients read one
-    // card shape (never a second summaryOf).
-    boardSummaryOf: function (projectPath, board, now, rows) {
-      return buildBoardSummary(board, now, readViewOf(projectPath, board), rows)
-    },
+    // T-231: the tool list IS /list. One handler, one page shape, one cursor —
+    // the tool and the panel cannot answer two different lists again.
+    taskList: taskList,
+    // T-231: the agent-facing board read. One summary page + the board facts a
+    // reader needs (counts/dispatch/locks/seq), never the 4.85 MB full snapshot.
+    boardPage: boardPage,
     ok: ok,
     failure: failure,
   })
@@ -980,6 +980,9 @@ export function createApi(ctx, options) {
     preflightProject: preflightProject,
     remember: remember,
     snapshot: snapshot,
+    // T-231: the TOOL's openProject answer is a TaskSummary page + the binding
+    // facts (preflight/registry), not the full detail + host inventory snapshot.
+    boardPage: boardPage,
     resolveProjectRoot: resolveProjectRoot,
     messageOf: messageOf,
     failure: failure,
@@ -4404,6 +4407,109 @@ export function createApi(ctx, options) {
     return ok({ tasks: page.map((task) => buildTaskSummary(read.board, task, now, readView)), nextCursor: nextCursor, count: page.length })
   }
 
+  /** How many cards one board page carries, and the hard cap a caller may ask for. */
+  const BOARD_PAGE_DEFAULT = 50
+  const BOARD_PAGE_MAX = 200
+
+  function boardPageLimitOf(value) {
+    const number = Number(value)
+    if (!Number.isFinite(number)) return BOARD_PAGE_DEFAULT
+    return Math.max(1, Math.min(BOARD_PAGE_MAX, Math.floor(number)))
+  }
+
+  function boardRankOf(task) {
+    const rank = STATUS_RANK[task === null || task === undefined ? undefined : task.status]
+    return Number.isFinite(rank) ? rank : Object.keys(STATUS_RANK).length
+  }
+
+  /** The board lane's own order: status rank, then id. */
+  function boardOrderOf(board) {
+    return board.tasks
+      .slice()
+      .sort((left, right) => {
+        const rank = boardRankOf(left) - boardRankOf(right)
+        return rank !== 0 ? rank : String(left.id).localeCompare(String(right.id))
+      })
+  }
+
+  /** One opaque cursor is "<statusRank>|<id>"; anything unreadable restarts the page. */
+  function boardPageCursorOf(value) {
+    if (typeof value !== 'string' || value.trim() === '') return null
+    const at = value.indexOf('|')
+    if (at < 0) return null
+    const rank = Number(value.slice(0, at))
+    const id = value.slice(at + 1)
+    if (!Number.isFinite(rank) || id === '') return null
+    return { rank: rank, id: id }
+  }
+
+  /**
+   * T-231: ONE board read for an agent caller — the first page of TaskSummary
+   * cards plus the board facts a reader needs to page and to route.
+   *
+   * The tool board used to answer the FULL snapshot (detail cards + host
+   * inventory): 4.85 MB for a 221-card project (T-229), 43x the light first paint.
+   * A reader that pages the board asks for this instead; `view:'full'` on the
+   * action stays as the explicit diagnostic escape hatch.
+   *
+   * The cards are the SAME TaskSummary the panel, /list and the tool list get
+   * (read-model.mjs), projected with the SAME per-request view this read builds,
+   * so a card cannot have two shapes again. The page order is the board lane's
+   * (status rank, then id) and the cursor names the last card of the page.
+   */
+  async function boardPage(projectPath, options) {
+    const o = options === undefined || options === null ? {} : options
+    projectPath = resolve(projectPath)
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const board = read.board
+    const now = clock()
+    // Same hygiene as the snapshot read: a lock whose card moved on is dropped
+    // before the view can report it as a wait reason.
+    state.sweepLocks()
+    reconcileLocks(board)
+    const readView = readViewOf(projectPath, board)
+    const limit = boardPageLimitOf(o.limit)
+    const cursor = boardPageCursorOf(o.cursor)
+    const ordered = boardOrderOf(board)
+    const after =
+      cursor === null
+        ? ordered
+        : ordered.filter((task) => {
+            const rank = boardRankOf(task)
+            // Same comparator the page order uses, so a cursor can never split
+            // an ordering the sort would produce differently.
+            return rank > cursor.rank || (rank === cursor.rank && String(task.id).localeCompare(cursor.id) > 0)
+          })
+    const page = after.slice(0, limit)
+    const last = page.length === 0 ? null : page[page.length - 1]
+    const nextCursor = after.length > limit && last !== null ? String(boardRankOf(last)) + '|' + String(last.id) : null
+    // The cards and the counters come from the SAME board-summary projection the
+    // frozen read model defines (one builder; this page is just a slice of it).
+    const summaryPage = buildBoardSummary(board, now, readView, page)
+    const ref = projectRefOf(projectPath)
+    return ok({
+      project: projectPath,
+      projectId: ref.id,
+      projectRoot: ref.root,
+      worktreeRoot: worktreeRootOf(board),
+      // The view is NAMED: a reader that expected detail can tell it got a page.
+      view: 'summary',
+      version: board.version,
+      seq: board.seq,
+      updatedAt: board.updatedAt,
+      counts: summaryPage.counts,
+      total: board.tasks.length,
+      count: page.length,
+      limit: limit,
+      nextCursor: nextCursor,
+      tasks: summaryPage.tasks,
+      // The board-level facts the queue/header render; all small and bounded.
+      dispatch: board.dispatch,
+      locks: locks.view(state.memory.locks, board, now),
+    })
+  }
+
   /** Renew the lease of every running task the caller owns. Any activity by the
    * assignee is a heartbeat and renews UNCONDITIONALLY — there is no "lease is
    * half spent" gate, so a long task cannot drift into expiry between two calls.
@@ -4506,12 +4612,123 @@ export function createApi(ctx, options) {
     )
   }
 
+  /**
+   * T-231: remember what one action call wrote, for the success envelope.
+   *
+   * The handler answers are task-shaped (task/events/dispatch, no board), so the
+   * sequence number the board recorded during the write is not visible to the
+   * caller. Rather than reading the whole board a second time, the write seam
+   * records it on the per-call tracker perform() put on the context; a write
+   * that bypasses mutate() (an expired decision applied during a sweep, for
+   * example) is covered by perform()'s single fallback read.
+   */
+  function recordWrite(context, board, events) {
+    const tracker = context === undefined || context === null ? null : context.writeTracker
+    if (tracker === null || tracker === undefined) return
+    if (Number.isFinite(board === null || board === undefined ? undefined : board.seq)) tracker.seq = board.seq
+    for (const event of Array.isArray(events) ? events : []) {
+      if (event !== null && event !== undefined && typeof event.id === 'string' && event.id !== '' && tracker.ids.indexOf(event.id) < 0) tracker.ids.push(event.id)
+    }
+  }
+
+  /** The domains an action can invalidate. Advisory data for the reader's cache. */
+  const META_DOMAIN_ACTIONS = [
+    'rolesCreate',
+    'rolesUpdate',
+    'rolesDelete',
+    'rolesBind',
+    'rolesReset',
+    'decisionPolicy',
+    'worktreesCleanup',
+    'harnessStart',
+    'harnessStop',
+    'harnessRestart',
+    'harnessSmoke',
+  ]
+  // These write board state AND the metadata a panel refreshes (dispatch settings
+  // live on the board; a settle can dispatch cards).
+  const BOARD_AND_META_ACTIONS = ['settings', 'tick']
+  const MERGE_DOMAIN_ACTIONS = ['mergeRequest', 'refreshMerge', 'rejectMerge', 'passTest', 'failTest', 'approveReview', 'requestChanges']
+  // A read NEVER grows a write envelope; the two roles-list answers are reads in
+  // practice even though the registry marks them user-scope, not readOnly.
+  const ENVELOPE_SKIP_ACTIONS = READ_ACTIONS.concat(['rolesList', 'rolesPreview'])
+
+  function changedDomainsOf(action, result, ids) {
+    const detail = Array.isArray(ids) && ids.length > 0 ? ['detail'] : []
+    if (action === 'decisionAnswer') {
+      const applied = result.applied
+      const executed = applied !== null && applied !== undefined && applied.executed === true
+      return executed ? ['board'].concat(detail, ['decisions']) : ['decisions']
+    }
+    if (MERGE_DOMAIN_ACTIONS.indexOf(action) >= 0) return ['board'].concat(detail, ['meta'])
+    if (BOARD_AND_META_ACTIONS.indexOf(action) >= 0) return ['board', 'meta']
+    if (META_DOMAIN_ACTIONS.indexOf(action) >= 0) return ['meta']
+    return ['board'].concat(detail)
+  }
+
+  /** The ids of the cards this call demonstrably touched. */
+  function affectedIdsOf(result, tracker) {
+    const ids = []
+    const push = (value) => {
+      if (typeof value === 'string' && value !== '' && ids.indexOf(value) < 0) ids.push(value)
+    }
+    if (tracker !== null && tracker !== undefined) for (const id of tracker.ids) push(id)
+    if (result.task !== null && result.task !== undefined) push(result.task.id)
+    push(result.taskId)
+    push(result.deleted)
+    if (Array.isArray(result.deleted)) for (const id of result.deleted) push(id)
+    if (Array.isArray(result.events)) {
+      for (const event of result.events) push(event === null || event === undefined ? null : event.id)
+    }
+    const applied = result.applied
+    if (applied !== null && applied !== undefined && typeof applied === 'object') {
+      const summary = applied.summary
+      if (summary !== null && summary !== undefined && typeof summary === 'object') {
+        push(summary.taskId)
+        if (Array.isArray(summary.deleted)) for (const id of summary.deleted) push(id)
+        if (Array.isArray(summary.ids)) for (const id of summary.ids) push(id)
+      }
+      push(applied.taskId)
+    }
+    return ids
+  }
+
+  /**
+   * T-231: one WRITE answer carries what changed, not the board.
+   *
+   * The HTTP route used to attach a full light snapshot to every successful
+   * action (and the tool answered nothing about what moved), so a write repeated
+   * on every 2.5 s poll the board the panel already had. A writer now answers
+   * { ok, seq, affected:{ids,count}, changed:[domains] }; a reader that wants the
+   * refreshed board asks for it (the versioned delta stays an explicit opt-in,
+   * see routes.mjs). Handlers keep their own task/dispatch/events fields.
+   */
+  async function attachActionEnvelope(action, result, tracker, projectPath) {
+    if (result === null || result === undefined || result.ok !== true) return result
+    if (ENVELOPE_SKIP_ACTIONS.indexOf(action) >= 0) return result
+    const ids = affectedIdsOf(result, tracker)
+    const changed = changedDomainsOf(action, result, ids)
+    let seq = tracker !== null && tracker !== undefined && Number.isFinite(tracker.seq) ? tracker.seq : null
+    // A card write that did not pass through mutate() (decision execution, a
+    // stage delivery) still names the board seq — one bounded read, only there.
+    if (seq === null && changed.indexOf('board') >= 0 && typeof projectPath === 'string' && projectPath !== '') {
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed === undefined && Number.isFinite(read.board.seq)) seq = read.board.seq
+    }
+    result.seq = seq
+    result.affected = { ids: ids, count: ids.length }
+    result.changed = changed
+    return result
+  }
+
   /** One board write. The heartbeat is NOT repeated here: perform() already ran it
    * for this call, so re-running it would double-write for every write action. */
   async function mutate(projectPath, mutator, context) {
     const applied = await state.apply(projectPath, mutator, writePolicyFor(projectPath))
     if (applied.failed !== null) return applied.failed
     reconcileLocks(applied.board)
+    // T-231: the envelope's seq/affected come from the write that just landed.
+    recordWrite(context, applied.board, applied.events)
     if (scheduler !== null) void scheduler.kick(projectPath)
     return ok({ board: applied.board, events: applied.events })
   }
@@ -6917,12 +7134,19 @@ export function createApi(ctx, options) {
     const projectPath = incoming.root
     // T-185: every action knows which Agent called it, so a release can tell a
     // stage child apart from the caller that is still waiting for the result.
-    const actionContext = Object.assign({}, context, { resolvedFrom: incoming.resolvedFrom, callerAgentId: sessionIdOf(context) })
+    const actionContext = Object.assign({}, context, {
+      resolvedFrom: incoming.resolvedFrom,
+      callerAgentId: sessionIdOf(context),
+      // T-231: the per-call write tracker the success envelope reads.
+      writeTracker: { seq: null, ids: [] },
+    })
     const result = await performResolved(action, source, actionContext, projectPath)
     // T-146: a merge can change merged/clean state without moving the worktree
     // HEAD, so the probe cache must be dropped for this project.
     if (result !== null && result !== undefined && result.ok === true && ['mergeRequest', 'refreshMerge', 'passTest'].indexOf(action) >= 0) invalidateWorktreeCaches(projectPath)
-    return result
+    // T-231: a successful WRITE answers what changed (seq/affected/changed) and
+    // never the board itself; a read keeps its own payload untouched.
+    return attachActionEnvelope(action, result, actionContext.writeTracker, projectPath)
   }
 
   async function performResolved(action, source, context, projectPath) {

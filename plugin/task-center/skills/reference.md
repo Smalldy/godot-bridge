@@ -10,6 +10,13 @@
 - 仅评审：`approveReview`、`requestChanges`；仅测试：`passTest`、`failTest`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessStatus`、`harnessSmoke`。
 - 仅用户（工具不暴露，agent 调用报 `user-only`）：`settings`、`rolesList`、`rolesPreview`、`rolesCreate`、`rolesUpdate`、`rolesDelete`、`rolesBind`、`rolesReset`、`skillsCatalog`、`approveStart`、`rejectStart`、`worktreesCleanup`、`decisionPolicy`。
 
+## 读模型（一次读一个契约）
+
+- `board`：默认 **TaskSummary 分页** —— `limit`（默认 50、最大 200）+ `cursor`（上一页的 `nextCursor`），一页只有摘要卡；`view:"full"` 是诊断逃生口（detail 卡 + 宿主清单），不要拿来浏览。
+- `list`：与 `/list` 同形 `{ tasks, nextCursor, count }`，支持 `q`、`status`、`cursor`、`limit`、`archived`。
+- `get`：唯一的 detail 入口（spec/acceptance/evidence/history/writeFiles、完整 review/test/merge 记录）。
+- 写动作成功回 `ok`、`seq`、`affected:{ ids, count }`、`changed:[board|detail|meta|decisions]`，不再附带整块看板快照；要刷新看板就自己读 `board`（或面板的 `/state`）。
+
 ## 拒绝码（可读失败，不是崩溃）
 
 - `unknown-project` / `missing-project` / `missing-path`：项目没绑定或路径不对 —— 先 `openProject`。

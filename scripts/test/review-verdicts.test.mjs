@@ -121,7 +121,7 @@ function createRig(options) {
       return scheduler.settle(project)
     },
     boardTask(id) {
-      return rig.action('board').then((snap) => {
+      return rig.action('board', { view: 'full' }).then((snap) => {
         assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 400))
         return snap.tasks.filter((entry) => entry.id === id)[0]
       })
