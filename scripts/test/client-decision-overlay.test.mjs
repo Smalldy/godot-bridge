@@ -734,4 +734,205 @@ console.log('PASS  T-211 the docked card scrolls and the attention pulse is one-
 }
 console.log('PASS  T-215 a long unbroken writeFiles path wraps inside the 368px dock')
 
+// ── T-226: the confirm button stays visible at 430x583 ─────────────────────
+//
+// A long spec used to push the action row below the card's visible area: at
+// 430x583 the card scrolled as one block, so the 确认 button only existed after
+// scrolling. The fix is a STICKY footer plus a card that takes the usable
+// viewport height. Node has no layout engine, so this suite locks the three
+// halves that make the visible guarantee:
+//   - the box-model contract (border-box, so the 406x559 budget is real and the
+//     card cannot spill past the 12px inset / clip its own borders);
+//   - the CSS contract (height budget, sticky declaration, opaque row);
+//   - the DOM contract (the footer is the LAST form node, after every
+//     scrollable field, so bottom:0 pins it to the visible bottom edge).
+// The narrow-window screenshots in the task evidence are the visual check.
+{
+  const HEAD = readFileSync(new URL('../../client/src/00-head.part', import.meta.url), 'utf8')
+  const bundle = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
+  const ruleOf = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = HEAD.match(new RegExp(escaped + '\\{[^}]*\\}'))
+    assert.ok(match !== null, 'the shipped sheet carries ' + selector)
+    return match[0]
+  }
+
+  const VIEWPORT_W = 430
+  const VIEWPORT_H = 583
+  const EDGE = 12
+  assert.ok(VIEWPORT_W < 560, 'the fixture window is narrower than the card max width')
+  assert.ok(VIEWPORT_W - EDGE * 2 >= 360, 'the 430px window still leaves a readable card width')
+
+  // 1) The overlay keeps a narrow safe-area inset; the card cap spends the same
+  //    24px budget, so the card can never grow past the visual viewport.
+  const overlayRule = ruleOf('.gbt-decisionoverlay')
+  assert.ok(overlayRule.includes('padding:' + EDGE + 'px'), 'the decision overlay uses a 12px safe-area inset')
+  assert.equal(overlayRule.includes('padding:20px'), false, 'the old 20px inset no longer eats the narrow height')
+
+  const cardRule = ruleOf('.gbt-decision')
+  assert.ok(cardRule.includes('width:min(560px,100%)'), 'the card keeps its 560px / 100% width contract')
+  assert.ok(cardRule.includes('max-height:calc(100dvh - 24px)'), 'the card takes the usable viewport height')
+  assert.equal(cardRule.includes('max-height:86vh'), false, 'the fixed 86vh guess is gone')
+  assert.ok(cardRule.includes('overflow:auto'), 'the body scrolls INSIDE the card')
+  assert.equal(/\bheight:100%/.test(cardRule), false, 'no forced full height: short content keeps the card short')
+  assert.ok(cardRule.includes('padding:18px 18px 0'), 'the bottom inset moved onto the sticky row, so the row can reach the card edge')
+  assert.ok(cardRule.includes('overscroll-behavior:contain'), 'scrolling the body does not chain to the page underneath')
+
+  const cap = cardRule.match(/max-height:calc\(100dvh - (\d+)px\)/)
+  assert.ok(cap !== null, 'the cap is a comparable calc()')
+  assert.equal(Number(cap[1]), EDGE * 2, 'the cap subtracts exactly the overlay inset')
+  // 430x583 -> the card may use 559px; the action row pins inside that area.
+  assert.equal(VIEWPORT_H - EDGE * 2, 559, 'the card may use 559px of the 583px window')
+
+  // 1a) THE BOX MODEL. The UA default is content-box, and the whole 12px inset
+  //     contract only holds if the declared width/height ARE the border box.
+  //     With content-box, `width:min(560px,100%)` resolves against the overlay's
+  //     406px content box and then ADDS 2*18px padding and the border: a 443px
+  //     border box centered at x=-6.5, so both side borders/rounded corners were
+  //     clipped and the internal scrollbar sat half off-screen. max-height had
+  //     the same defect on the other axis (it capped the content box only), so
+  //     the 24px safe-area budget was never actually spent. This is the review
+  //     fix that turns the sticky-row guarantee into a real 406x559 card.
+  function declarationsOf(ruleText) {
+    const body = ruleText.slice(ruleText.indexOf('{') + 1, ruleText.lastIndexOf('}'))
+    const out = new Map()
+    for (const part of body.split(';')) {
+      const at = part.indexOf(':')
+      if (at < 0) continue
+      out.set(part.slice(0, at).trim(), part.slice(at + 1).trim())
+    }
+    return out
+  }
+  const cardDecl = declarationsOf(cardRule)
+  assert.equal(cardDecl.get('box-sizing'), 'border-box', 'the card border box includes its own padding and border')
+  assert.equal(cardDecl.get('padding'), '18px 18px 0', 'the parsed padding still carries the 18px top / 0 bottom budget')
+  const PAD_INLINE = 18
+  const PAD_TOP = 18
+  const BORDER = 0.5
+  const usableWidth = VIEWPORT_W - EDGE * 2
+  const usableHeight = VIEWPORT_H - EDGE * 2
+  assert.equal(usableWidth, 406, 'a 430px window leaves a 406px card width at the 12px inset')
+  assert.equal(usableHeight, 559, 'a 583px window leaves a 559px card height at the 12px inset')
+  // width:min(560px,100%) — 100% resolves against the overlay's content box.
+  const declaredWidth = Math.min(560, usableWidth)
+  const contentBoxWidth = declaredWidth + PAD_INLINE * 2 + BORDER * 2
+  const renderedBorderBoxWidth = cardDecl.get('box-sizing') === 'border-box' ? declaredWidth : contentBoxWidth
+  assert.equal(renderedBorderBoxWidth, usableWidth, 'at 430px the card border box fits the 406px content box exactly')
+  assert.equal(contentBoxWidth, 443, 'content-box would render a 443px border box')
+  assert.ok(contentBoxWidth > VIEWPORT_W, 'content-box overflows the 430px window itself, not just the inset')
+  // max-height:calc(100dvh - 24px) now caps the BORDER box: 583 - 24 = 559.
+  const cappedHeight = VIEWPORT_H - Number(cap[1])
+  const cappedBorderBoxHeight = cardDecl.get('box-sizing') === 'border-box' ? cappedHeight : cappedHeight + PAD_TOP + BORDER * 2
+  assert.equal(cappedBorderBoxHeight, usableHeight, 'the cap spends the whole 24px budget, not only the content box')
+  assert.equal(EDGE + cappedBorderBoxHeight + EDGE, VIEWPORT_H, 'the capped card still leaves the 12px inset top and bottom')
+  // An engine without dvh must not drop the cap: the vh fallback is declared first.
+  assert.ok(cardRule.includes('max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px)'), 'a vh fallback precedes the dvh cap')
+  // A focused/scrollIntoView target must clear the pinned row (10 + 30px shared
+  // button + 16 = 56px); scroll-padding-bottom is what keeps it visible.
+  assert.ok(/scroll-padding-bottom:64px/.test(cardRule), 'keyboard focus clears the pinned row')
+  assert.ok(64 >= 10 + 30 + 16, 'the scroll padding covers the 56px pinned row')
+
+  // 2) The action row is a sticky footer, not a plain row at the end of the flow.
+  const footRule = ruleOf('.gbt-decisionfoot')
+  for (const declaration of [
+    'position:sticky',
+    'bottom:0',
+    'z-index:2',
+    'background:var(--dsw-alias-bg-layer-2)',
+    'padding:10px 0 16px',
+    'margin:0',
+  ]) {
+    assert.ok(footRule.includes(declaration), '.gbt-decisionfoot keeps ' + declaration)
+  }
+  assert.equal(footRule.includes('margin:14px 0 0'), false, 'the top spacing is padding, so the opaque row covers the gap')
+  assert.equal(/top:\s*\d/.test(footRule), false, 'the row pins to the bottom, never to a guessed top offset')
+
+  // 3) The compact dock card keeps the shared sticky row without a second inset:
+  //    its own 14px padding is the bottom space and the dock panel is the scroller.
+  const compactRule = ruleOf('.gbt-decision.gbt-decisioncompact')
+  assert.ok(compactRule.includes('padding:14px'), 'the compact card keeps its own padding')
+  assert.ok(compactRule.includes('overflow:visible'), 'the compact card is not its own scroller')
+  assert.ok(HEAD.includes('.gbt-decision.gbt-decisioncompact .gbt-decisionfoot{padding-bottom:0}'), 'the compact row adds no second bottom gap')
+  const panelRule = ruleOf('.gbt-decisiondockpanel')
+  assert.ok(panelRule.includes('overflow-y:auto'), 'the dock panel stays the compact card\'s scroller')
+  assert.ok(panelRule.includes('max-height:'), 'the dock panel keeps its measured height cap')
+
+  // 4) The DOM contract: the foot is the LAST form node on BOTH surfaces, after
+  //    every node that can grow with a long spec. With bottom:0 that is what
+  //    pins the confirm button to the visible bottom instead of to the end of
+  //    the scroll content.
+  function topLevelChildren(cardNode) {
+    const raw = cardNode.props.children
+    const list = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw]
+    const flat = []
+    for (const entry of list) {
+      if (Array.isArray(entry)) flat.push.apply(flat, entry)
+      else flat.push(entry)
+    }
+    return flat.filter((entry) => entry !== null && entry !== undefined)
+  }
+  function assertStickyFoot(cardNode, label) {
+    assert.ok(cardNode !== null, label + ': the card root exists')
+    const kids = topLevelChildren(cardNode)
+    const last = kids[kids.length - 1]
+    assert.equal(last.props['data-decision-foot'], 'true', label + ': the sticky footer is the LAST form node')
+    assert.equal(last.props.className, 'gbt-decisionfoot')
+    const bodyIndex = kids.findIndex((kid) => kid.props['data-decision-body'] !== undefined)
+    const optionsIndex = kids.findIndex((kid) => kid.props['data-decision-options'] !== undefined)
+    const textIndex = kids.findIndex((kid) => find(kid, (node) => node.props && node.props['data-decision-text'] !== undefined) !== null)
+    assert.ok(bodyIndex >= 0 && bodyIndex < kids.length - 1, label + ': the long body scrolls above the pinned row')
+    assert.ok(optionsIndex >= 0 && optionsIndex < kids.length - 1, label + ': the options scroll above the pinned row')
+    assert.ok(textIndex >= 0 && textIndex < kids.length - 1, label + ': the free-text field scrolls above the pinned row')
+    const confirm = find(last, (node) => node.props && node.props['data-decision-confirm-submit'] === 'true')
+    assert.ok(confirm !== null, label + ': 确认 lives INSIDE the visible row')
+    assert.equal(confirm.props.disabled, false, label + ': the visible 确认 button is actually submittable')
+    const after = findAll(cardNode, (node) => node.props && typeof node.props.onClick === 'function')
+    assert.equal(after[after.length - 1], confirm, label + ': no other control sits below the pinned row')
+  }
+
+  const longBody = [
+    '# 决策 430x583 长 spec',
+    '任务：T-226 决策弹窗确认按钮 sticky',
+    '验收：430x583 下确认按钮始终可见，无需滚动整个卡片；正文内部滚动。',
+  ]
+    .concat(Array.apply(null, Array(22)).map((unused, index) => '正文第 ' + String(index + 1).padStart(2, '0') + ' 行：长 spec 占用卡片高度，用于复现确认按钮被推到可视区下方的问题。'))
+    .join('\n')
+
+  const longDecision = decision({ title: '创建任务 T-226？', body: longBody })
+  const modal = DecisionModal({
+    queue: [longDecision],
+    receivedAt: Date.now(),
+    t: t,
+    busy: false,
+    error: '',
+    onAnswer: () => {},
+  })
+  const modalRoot = find(modal, (node) => node.props && node.props.role === 'dialog' && node.props.className === 'gbt-decision')
+  assertStickyFoot(modalRoot, 'the panel modal')
+  const modalBody = find(modal, (node) => node.props && node.props['data-decision-body'] === 'true')
+  assert.equal(modalBody.props.children, longBody, 'the long spec reaches the modal verbatim, line breaks included')
+
+  const compactCard = DecisionModal.DecisionCard({
+    decision: longDecision,
+    queueLeft: 0,
+    receivedAt: Date.now(),
+    t: t,
+    busy: false,
+    error: '',
+    onAnswer: () => {},
+    onDismiss: () => {},
+  })
+  const compactRoot = find(compactCard, (node) => node.props && node.props['data-decision-card'] === 'true')
+  assertStickyFoot(compactRoot, 'the compact dock card')
+
+  // 5) The shipped bundle carries the same rules and the hook (no stale build).
+  assert.ok(bundle.includes('data-decision-foot'), 'the rebuilt bundle renders the sticky row hook')
+  assert.ok(bundle.includes('max-height:calc(100dvh - 24px)'), 'the rebuilt bundle ships the usable-height cap')
+  assert.ok(bundle.includes('.gbt-decision{box-sizing:border-box'), 'the rebuilt bundle ships the border-box card rule')
+  assert.ok(bundle.includes('scroll-padding-bottom:64px'), 'the rebuilt bundle ships the focus clearance')
+  assert.ok(bundle.includes('position:sticky;bottom:0;z-index:2;background:var(--dsw-alias-bg-layer-2)'), 'the rebuilt bundle ships the sticky footer')
+  assert.ok(bundle.includes('gbt-decisioncompact .gbt-decisionfoot{padding-bottom:0}'), 'the rebuilt bundle ships the compact override')
+}
+console.log('PASS  T-226 a long decision keeps the sticky 确认 row visible at 430x583 (both surfaces)')
+
 console.log('\nPASS  the conversation page answers pending decisions without opening the panel')

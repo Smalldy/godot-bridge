@@ -1943,8 +1943,22 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			// T-195: the host-decision modal. One foregrounded question; the queue
 			// count, the server countdown and the default badge are the only
 			// additions over the shared modal shell.
-			'.gbt-decisionoverlay{position:fixed;inset:0;background:rgba(15,18,24,.48);display:grid;place-items:center;z-index:120;padding:20px}',
-			'.gbt-decision{width:min(560px,100%);max-height:86vh;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.24),0 2px 8px rgba(0,0,0,.08);padding:18px}',
+			// T-226: a decision is a blocking question, so the card takes the usable
+			// viewport height (not a fixed 86vh guess) and the BODY scrolls while the
+			// footer stays pinned. The overlay inset and the CSS cap share one 24px budget.
+			'.gbt-decisionoverlay{position:fixed;inset:0;background:rgba(15,18,24,.48);display:grid;place-items:center;z-index:120;padding:12px}',
+			// T-226 review: border-box, NOT the UA default content-box. With content-box,
+			// `width:min(560px,100%)` resolves against the overlay's 406px content box and
+			// then ADDS 2*18px padding and the border: a 443px border box at a 430px
+			// window, so the side borders, the rounded corners and part of the internal
+			// scrollbar were clipped. max-height had the same problem in the other axis:
+			// it capped only the content box, so the advertised 24px safe area was never
+			// actually spent. Every companion card (including the compact dock card)
+			// already sets border-box. The plain `vh` declaration is the fallback for an
+			// engine that rejects `dvh` (which would otherwise drop the cap entirely).
+			// scroll-padding-bottom keeps a focused/scrollIntoView target above the
+			// pinned row (row = 10 + 30px button + 16 = 56px; 64 leaves 8px of air).
+			'.gbt-decision{box-sizing:border-box;width:min(560px,100%);max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow:auto;overscroll-behavior:contain;scroll-padding-bottom:64px;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.24),0 2px 8px rgba(0,0,0,.08);padding:18px 18px 0}',
 			'.gbt-decisionhead{display:flex;align-items:flex-start;gap:10px}',
 			'.gbt-decisionhead h2{margin:0;font-size:15px;font-weight:600;flex:1}',
 			'.gbt-decisionsub{margin:2px 0 0;font-size:11.5px;color:var(--dsw-alias-label-secondary);word-break:break-word}',
@@ -1967,7 +1981,13 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-decisiontext{display:flex;flex-direction:column;gap:4px;margin:12px 0 0;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 			'.gbt-decisionhighrisk{margin:10px 0 0;display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-decisionhighriskin{margin:0;width:160px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}',
-			'.gbt-decisionfoot{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:14px 0 0;flex-wrap:wrap}',
+			// T-226: the action row is a sticky footer. The confirm button is therefore
+			// visible at 430x583 without scrolling the card first; the body passes BEHIND
+			// it, so the row is opaque and its top spacing is padding (a margin would
+			// leave a see-through gap). The bottom inset lives here too, so the pinned row
+			// reaches the card's rounded bottom edge instead of leaving a strip the
+			// scrolled text can show through.
+			'.gbt-decisionfoot{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:0;padding:10px 0 16px;flex-wrap:wrap;position:sticky;bottom:0;z-index:2;background:var(--dsw-alias-bg-layer-2)}',
 			'.gbt-decisionfoot .gbt-muted{flex:1 1 auto;min-width:0}',
 			// T-208: the conversation-page shell overlay. The chip anchors at the
 			// centre column's inline end; the docked card grows upwards and is
@@ -1991,6 +2011,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			// 2*14px wider than the panel, so the right border and the last characters
 			// of every line were clipped by the panel edge.
 			'.gbt-decision.gbt-decisioncompact{box-sizing:border-box;width:100%;max-width:100%;min-width:0;max-height:none;overflow:visible;padding:14px;overflow-wrap:anywhere;word-break:break-word;box-shadow:var(--dsw-shadow-lv2)}',
+			// T-226: the compact card's scroller is the dock panel, and its own 14px
+			// padding is the bottom inset, so the sticky row adds no second gap.
+			'.gbt-decision.gbt-decisioncompact .gbt-decisionfoot{padding-bottom:0}',
 			// T-211: the one-shot attention pulse for a NEW pending decision. One
 			// iteration only (never infinite), no shake; the data marker is also the
 			// test hook. 'static' is the reduced-motion / card-open highlight.
@@ -11299,9 +11322,13 @@ function createDecisionModal(deps) {
 						)
 					: null,
 				error,
+				// T-226: this row is the STICKY footer (00-head.part). It must stay the
+				// LAST node of the form: the card scrolls, the action row pins to the
+				// visible bottom, and the confirm button is reachable at 430x583 without
+				// scrolling the card first. data-decision-foot is the test hook.
 				h(
 					'div',
-					{ key: 'foot', className: 'gbt-decisionfoot' },
+					{ key: 'foot', className: 'gbt-decisionfoot', 'data-decision-foot': 'true' },
 					openTask,
 					h(
 						'button',

@@ -244,9 +244,13 @@ function createDecisionModal(deps) {
 						)
 					: null,
 				error,
+				// T-226: this row is the STICKY footer (00-head.part). It must stay the
+				// LAST node of the form: the card scrolls, the action row pins to the
+				// visible bottom, and the confirm button is reachable at 430x583 without
+				// scrolling the card first. data-decision-foot is the test hook.
 				h(
 					'div',
-					{ key: 'foot', className: 'gbt-decisionfoot' },
+					{ key: 'foot', className: 'gbt-decisionfoot', 'data-decision-foot': 'true' },
 					openTask,
 					h(
 						'button',
