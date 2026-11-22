@@ -1,16 +1,19 @@
 /**
  * Task center shell view module.
  *
- * Extracted from the forms/shell fragments; React, h, the five views, the
- * forms, the panel hooks/state and the project/header helpers are injected by
- * the build.
+ * Extracted from the forms/shell fragments; React, h, the board/status/roles
+ * views, the forms, the panel hooks/state and the project/header helpers are
+ * injected by the build.
+ *
+ * T-228: the top navigation is 看板 / 状态 / 角色. The retired queue and agents
+ * pages were folded into the status page (queue rows + agent table), so a
+ * persisted view that still names them falls back to status instead of
+ * rendering a page the nav no longer exposes.
  */
 function createTaskCenter(deps) {
 	const React = deps.React
 	const h = deps.h
 	const Board = deps.Board
-	const QueueView = deps.QueueView
-	const WorkersView = deps.WorkersView
 	const StatusView = deps.StatusView
 	const RolesView = deps.RolesView
 	const DetailView = deps.DetailView
@@ -81,8 +84,15 @@ function createTaskCenter(deps) {
 		const t = useTranslate()
 		const snapshot = useSnapshot()
 		const now = useNow(5000)
-		// Rendering tests may pick the first view; the production slot passes no props.
-		const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'status', 'roles'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
+		// T-228: three views only. A rendering test may pin one; the production
+		// slot passes no props. The retired queue/workers names (in the props or in
+		// a panelState persisted before T-228) land on the status page, which now
+		// owns the queue rows and the agent table.
+		function normalizeView(value) {
+			if (value === 'queue' || value === 'workers') return 'status'
+			return value === 'board' || value === 'status' || value === 'roles' ? value : 'board'
+		}
+		const initialView = normalizeView(props !== undefined && props !== null && props.initialView !== undefined ? props.initialView : panelState.view)
 		const [view, setViewState] = React.useState(initialView)
 		const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 		const [editing, setEditing] = React.useState(null)
@@ -186,7 +196,6 @@ function createTaskCenter(deps) {
 			if (base === undefined) return null
 			return Object.assign({}, base, snapshot.details[editing] === undefined ? {} : snapshot.details[editing].task)
 		})()
-		const queue = snapshot.queue === undefined || snapshot.queue === null ? [] : snapshot.queue
 		const scheduler = snapshot.scheduler
 		const busy = snapshot.busy === undefined || snapshot.busy === null ? null : snapshot.busy
 		// T-195: pending host decisions, oldest first (the host's queue order).
@@ -271,10 +280,10 @@ function createTaskCenter(deps) {
 			if (status === 'stale') return t('sessionsStatusStale')
 			return t('sessionsStatusUnknown')
 		}
+		// T-228: 看板 / 状态 / 角色. Queue and agents are cards on the status page,
+		// not separate destinations.
 		const tabs = [
 			{ key: 'board', label: t('boardTab') },
-			{ key: 'queue', label: t('queue') },
-			{ key: 'workers', label: t('agentsTab') },
 			{ key: 'status', label: t('statusTab') },
 			{ key: 'roles', label: t('rolesTab') },
 		]
@@ -704,7 +713,6 @@ function createTaskCenter(deps) {
 		)
 		const tabCountOf = function (key) {
 			if (key === 'board') return Number.isFinite(counts.total) ? counts.total : tasks.length
-			if (key === 'queue') return queue.length
 			return null
 		}
 		const tabsView = h(
@@ -886,16 +894,15 @@ function createTaskCenter(deps) {
 					onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
 					onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 				})
-		: view === 'queue'
-			? h(QueueView, { snapshot: snapshot, t: t, onOpen: openTask })
-			: view === 'workers'
-				? h(WorkersView, { snapshot: snapshot, t: t })
-				: view === 'status'
+		: view === 'status'
 			? h(StatusView, {
 				snapshot: snapshot,
 				t: t,
 				now: now,
 				store: store,
+				// T-228: a queue row on the status page opens the same task detail as
+				// a board card; the status page owns no routing of its own.
+				onOpen: openTask,
 				onOpenArchive: function () {
 					doneAllReset()
 					setDoneAllArchived(true)

@@ -42,6 +42,14 @@ const tree = {
   count: 1,
   error: null,
 }
+// T-228 fixtures: one READY card and two WAITING cards (one waiting on a
+// dependency, one broken) so the queue card renders both halves. READY rows are
+// snapshot.queue entries — the Host's service.summary() carries the writeFiles
+// ARRAY and no writeFileCount — while WAITING rows come from tasks[] (summaryOf,
+// writeFileCount). Both shapes must yield a lock chip.
+const readyTask = { id: 'T-10', title: 'ready card', status: 'pending', priority: 80, dependsOn: [], dependency: { state: 'ready', waitingOn: [], brokenOn: [] }, writeFiles: ['client/src/a.cjs', 'client/src/b.cjs'] }
+const waitingTask = { id: 'T-11', title: 'waiting card', status: 'pending', priority: 50, dependsOn: [], dependency: { state: 'waiting', waitingOn: ['T-10'], brokenOn: [] }, writeFileCount: 0 }
+const brokenTask = { id: 'T-12', title: 'broken card', status: 'pending', priority: 70, dependsOn: [], dependency: { state: 'broken', waitingOn: [], brokenOn: ['T-9'] }, writeFileCount: 1 }
 const snapshot = {
   source: 'host',
   project: '/repo',
@@ -50,8 +58,8 @@ const snapshot = {
   archivedCount: 0,
   archiveRange: null,
   boardSize: null,
-  tasks: [],
-  queue: [],
+  tasks: [readyTask, waitingTask, brokenTask],
+  queue: [readyTask],
   scheduler: null,
   worktrees: null,
   activity: { entries: [] },
@@ -73,6 +81,71 @@ assert.equal(agentRows[1].props['data-status-agent-task'], 'T-1')
 const text = JSON.stringify(out)
 assert.ok(text.includes('statusCardAgents'))
 assert.ok(text.includes('worker-1'))
+
+// ── T-228: the status page owns the queue and the agent table ──────────────
+// Exactly one queue card and one agents card: the retired queue/workers pages
+// must not be re-created as duplicates here.
+const cards = []
+walk(out, (node) => { if (node.props && node.props['data-status-card'] !== undefined) cards.push(node.props['data-status-card']) })
+assert.equal(cards.filter((name) => name === 'queue').length, 1, 'one queue card')
+assert.equal(cards.filter((name) => name === 'agents').length, 1, 'one agents card')
+assert.ok(text.includes('statusCardQueue'), 'the queue card has a title')
+
+// READY rows come from snapshot.queue; WAITING rows are pending cards whose
+// dependency is not ready (waiting or broken).
+const queueRows = []
+walk(out, (node) => { if (node.props && node.props['data-queue-row'] !== undefined) queueRows.push(node) })
+assert.deepEqual(
+  queueRows.map((row) => [row.props['data-queue-row'], row.props['data-queue-state']]),
+  [
+    ['T-10', 'ready'],
+    ['T-11', 'waiting'],
+    ['T-12', 'waiting'],
+  ],
+  'both queue halves render, ready first',
+)
+assert.ok(queueRows[0].props['data-queue-dependency'] === 'ready', 'a ready row names its ready dependency state')
+assert.ok(queueRows[1].props['data-queue-dependency'] === 'waiting', 'a waiting row is marked waiting')
+assert.ok(queueRows[2].props['data-queue-dependency'] === 'blocked', 'a broken dependency is marked blocked')
+assert.ok(text.includes('P80'), 'the row shows the priority')
+assert.ok(JSON.stringify(queueRows[1]).includes('T-10'), 'the waiting row names what it waits on')
+assert.ok(JSON.stringify(queueRows[2]).includes('T-9'), 'the broken row names what is broken')
+assert.ok(text.includes('🔒 2'), 'a READY queue row derives the lock count from the writeFiles array (real /state queue shape)')
+assert.ok(text.includes('🔒 1'), 'a WAITING task row still reads writeFileCount (real /state tasks shape)')
+assert.ok(text.includes('"data-queue-summary":"true"'), 'the queue head summarises ready / waiting')
+
+// Clicking a queue row opens the same task detail a board card opens.
+const opened = []
+const interactive = StatusView({
+  t: (key) => key,
+  snapshot: snapshot,
+  now: 1000,
+  store: { listTasks: async () => ({ ok: true, tasks: [] }) },
+  onOpen: (id) => { opened.push(id) },
+})
+let secondRow = null
+walk(interactive, (node) => {
+  if (secondRow === null && node.props && node.props['data-queue-row'] === 'T-11') secondRow = node
+})
+assert.ok(secondRow !== null, 'the waiting row is rendered')
+secondRow.props.onClick()
+assert.deepEqual(opened, ['T-11'], 'the queue row opens the task detail')
+
+// The agent card is a four-column table (角色 / 名称 / 状态 / 任务) and the root
+// Agent shares the same row shape as its children.
+assert.ok(text.includes('gbt-deckagenthead'), 'the agent card has a column header')
+assert.ok(text.includes('"data-agent-columns":"true"'))
+assert.ok(text.includes('gbt-deckagentrole') && text.includes('gbt-deckagentstatus') && text.includes('gbt-deckagenttask'), 'the agent rows carry the four cells')
+assert.equal(agentRows[0].props['data-status-agent-role'], 'root', 'the root Agent has a role cell')
+assert.equal(agentRows[1].props['data-status-agent-task'], 'T-1', 'a child Agent has a task cell')
+
+// The dispatch card no longer repeats the ready detail; that belongs to the
+// queue card now.
+assert.ok(!text.includes('"data-kv":"ready"'), 'the dispatch card drops the duplicated ready metric')
+
+const emptyQueue = StatusView({ t: (key) => key, snapshot: Object.assign({}, snapshot, { queue: [], tasks: [] }), now: 1000, store: { listTasks: async () => ({ ok: true, tasks: [] }) } })
+assert.ok(JSON.stringify(emptyQueue).includes('statusQueueEmpty'), 'an empty queue says so once')
+console.log('PASS  T-228 the status page renders ready/waiting queue rows and a four-column agent table')
 
 const noTree = StatusView({ t: (key) => key, snapshot: Object.assign({}, snapshot, { agentTree: null }), now: 1000, store: { listTasks: async () => ({ ok: true, tasks: [] }) } })
 const noTreeText = JSON.stringify(noTree)
