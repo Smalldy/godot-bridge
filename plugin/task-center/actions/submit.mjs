@@ -7,7 +7,9 @@
  * looking for a removed Team slot.
  */
 export function createSubmitAction(deps) {
-  const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
+  // T-223: reviewer/tester starts have ONE authority. The action never calls the
+  // stage service's start* itself.
+  const stageCoordinator = deps.stageCoordinator === undefined ? null : deps.stageCoordinator
   const readBoardOrFail = deps.readBoardOrFail
   const taskForContext = deps.taskForContext
   const model = deps.model
@@ -26,7 +28,6 @@ export function createSubmitAction(deps) {
   const releaseTaskLocks = deps.releaseTaskLocks
   const emitActivity = deps.emitActivity
   const reviewBriefFor = deps.reviewBriefFor
-  const recordDeliveredTo = deps.recordDeliveredTo
   const ok = deps.ok
   const failure = deps.failure
 
@@ -56,7 +57,7 @@ export function createSubmitAction(deps) {
       checked.task.review === null || checked.task.review === undefined ? 1 : checked.task.review.attempt + 1
     // The stage needs a runtime BEFORE the card leaves running: a card parked in
     // review with nobody able to read it is worse than a card that waits.
-    if (willReview && nextReviewAttempt <= REVIEW_MAX_ROUNDS && stageAgents === null) {
+    if (willReview && nextReviewAttempt <= REVIEW_MAX_ROUNDS && stageCoordinator === null) {
       await markWaiting(projectPath, id, 'agent-runtime-unavailable', 'no subagent runtime to start a reviewer', context)
       return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (agent-runtime-unavailable); the task stays running and will be retried by the host')
     }
@@ -102,13 +103,16 @@ export function createSubmitAction(deps) {
         emitActivity(context, 'review-start', 'submitted for review round ' + String(round), id)
         // v3: start the reviewer only after the board says reviewing, so its
         // first turn always sees the stage it is reviewing.
-        const started = await stageAgents.startReviewer(result.task, reviewBriefFor(result.task, projectPath, candidateArtifact))
-        if (started.ok !== true) {
-          await markWaiting(projectPath, id, 'reviewer-unavailable', String(started.message), context)
-          return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (' + String(started.message) + '); the task waits in review')
+        // T-223: the reviewer starts through the ONE authority. It re-reads the
+        // reviewing round this write just opened, reuses a reviewer another path
+        // already delivered, and records the delivery before its queue releases.
+        const ensured = await stageCoordinator.ensure('reviewer', result.task, reviewBriefFor(result.task, projectPath, candidateArtifact), { projectPath: projectPath })
+        if (ensured.ok !== true) {
+          await markWaiting(projectPath, id, 'reviewer-unavailable', String(ensured.message), context)
+          return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (' + String(ensured.message) + '); the task waits in review')
         }
-        await recordDeliveredTo(projectPath, result.task.id, 'reviewer', { name: started.name, id: started.agentId })
-        result.provisioned = started
+        result.stage = ensured
+        if (ensured.action === 'spawned' || ensured.action === 'reused') result.provisioned = ensured
       }
     }
     return result

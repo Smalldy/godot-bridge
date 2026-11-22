@@ -1067,7 +1067,12 @@ export function normaliseDeliveredTo(raw) {
   const name = typeof raw.name === 'string' && raw.name !== '' ? raw.name : null
   const id = typeof raw.id === 'string' && raw.id !== '' ? raw.id : null
   if (name === null && id === null) return null
-  return { name: name, id: id, at: typeof raw.at === 'string' ? raw.at : null }
+  const delivered = { name: name, id: id, at: typeof raw.at === 'string' ? raw.at : null }
+  // T-223: the delivery generation is DURABLE. The StageCoordinator refuses a
+  // late write from an older generation, and that check has to survive a board
+  // read (and a plugin reload), so the number must not be dropped here.
+  if (Number.isFinite(raw.generation) && raw.generation > 0) delivered.generation = Math.floor(raw.generation)
+  return delivered
 }
 
 export function normaliseReview(raw) {

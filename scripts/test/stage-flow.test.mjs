@@ -1047,10 +1047,132 @@ function createSweepRig(options) {
     check('T-221 an abandoned turn leaves no unrecorded reviewer behind', () => {
       const reviewers = Array.from(agents.live).filter((id) => String(id).indexOf('reviewer-T-921') === 0)
       assert.deepEqual(reviewers, [], 'the reviewer started by the abandoned turn was not rolled back')
-      assert.equal(agents.calls.filter((call) => call.kind === 'startReviewer' && call.taskId === 'T-921').length, 1)
+      // T-223: the reviewer now starts AFTER the guarded round write, so an
+      // abandoned turn starts nothing at all (it used to start one and roll it
+      // back). "Nothing behind" is the invariant; zero starts is the stronger form.
+      assert.equal(agents.calls.filter((call) => call.kind === 'startReviewer' && call.taskId === 'T-921').length, 0)
     })
     rig.scheduler.dispose()
   }
+}
+
+// ── T-223: the StageCoordinator is the ONE start authority ───────────────────
+//
+// The T-221 incident: two host paths could each read a pending round with no
+// deliveredTo and each start a tester; the second write overwrote the first
+// child and the card was worked by two testers. These checks drive the REAL
+// sweep concurrently, so the regression is exercised end to end, not through a
+// unit seam.
+
+// A. two concurrent sweeps must still produce exactly ONE tester.
+{
+  const taskAgents = createFakeTaskAgents()
+  const merger = recordingMerger()
+  const rig = createSweepRig({ taskAgents: taskAgents, merger: merger, cards: [staleCandidateCard('T-930')] })
+  const sweeps = await Promise.all([rig.api.autoMergePending(PROJECT), rig.api.autoMergePending(PROJECT)])
+  const card = await rig.card('T-930')
+  const testerStarts = taskAgents.calls.filter((call) => call.kind === 'startTester' && call.taskId === 'T-930')
+
+  check('T-223 two concurrent sweeps start exactly ONE tester for a pending round', () => {
+    assert.equal(sweeps.every((sweep) => sweep.ok === true), true, JSON.stringify(sweeps))
+    assert.equal(testerStarts.length, 1, 'startTester calls: ' + JSON.stringify(testerStarts.map((call) => call.agentId)))
+    assert.equal(taskAgents.live.has(testerStarts[0].agentId), true, 'the started tester is not live')
+    assert.equal(Array.from(taskAgents.live).filter((id) => String(id).indexOf('tester-') === 0).length, 1, JSON.stringify(Array.from(taskAgents.live)))
+    assert.equal(card.test.deliveredTo.id, testerStarts[0].agentId, 'the card does not point at the tester it started')
+    assert.equal(card.test.deliveredTo.generation, 1, 'the delivery generation is not durable on the board')
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'releaseTask').length, 0, 'the second sweep disposed the first tester instead of reusing it')
+  })
+  rig.scheduler.dispose()
+}
+
+// B. a pending round recorded by a PREVIOUS process (no local handle) is never
+//    raced with a second child: the sweep waits for reconciliation.
+{
+  const taskAgents = createFakeTaskAgents()
+  const merger = recordingMerger()
+  const stamp = '2026-11-20T00:00:00.000Z'
+  const rig = createSweepRig({
+    taskAgents: taskAgents,
+    merger: merger,
+    cards: [
+      staleCandidateCard('T-931', {
+        test: { status: 'pending', attempt: 1, deliveredTo: { name: 'tester-restart', id: 'tester-restart', at: stamp } },
+      }),
+    ],
+  })
+  const sweeps = []
+  for (let round = 0; round < 2; round += 1) sweeps.push(await rig.api.autoMergePending(PROJECT))
+  const card = await rig.card('T-931')
+
+  check('T-223 a pending round with an unconfirmable delivery is not double-spawned', () => {
+    assert.equal(sweeps.every((sweep) => sweep.ok === true), true, JSON.stringify(sweeps))
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'startTester').length, 0, 'a second tester was started behind the recorded one')
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'releaseTask').length, 0, 'the unconfirmable delivery was disposed')
+    assert.equal(card.status, 'testing')
+    assert.equal(card.test.status, 'pending')
+    assert.equal(card.test.deliveredTo.id, 'tester-restart', 'the recorded delivery was overwritten')
+    assert.equal(card.waitingReason, 'candidate-stale', 'the wait was cleared although no tester started')
+  })
+  rig.scheduler.dispose()
+}
+
+// C. a baseline retest (the target moved under a passed round) starts its tester
+//    through the coordinator AND records it; the recovery pass then reuses it
+//    instead of starting the second tester the old code could create.
+{
+  const taskAgents = createFakeTaskAgents()
+  const calls = []
+  const merger = {
+    calls: calls,
+    async createCandidate(task) {
+      calls.push({ kind: 'createCandidate', id: String(task.id) })
+      return { ok: true, path: join(PROJECT, '.worktrees', 'test-' + String(task.id)), base: HEX('c'), head: 'rebuilt-' + String(task.id), target: 'main', actualFiles: [] }
+    },
+    async mergeCandidate(task) {
+      calls.push({ kind: 'mergeCandidate', id: String(task.id) })
+      // The target moved after the tester passed: the candidate is stale.
+      return { ok: true, status: 'stale' }
+    },
+    async discardCandidate(task) {
+      calls.push({ kind: 'discardCandidate', id: String(task.id) })
+      return { ok: true }
+    },
+  }
+  const rig = createSweepRig({
+    taskAgents: taskAgents,
+    merger: merger,
+    cards: [
+      staleCandidateCard('T-940', {
+        waitingReason: 'tester-unavailable',
+        waitingDetail: 'the previous tester could not be started',
+        test: { status: 'passed', attempt: 1 },
+        merge: { status: 'open', base: HEX('a'), head: HEX('b'), target: 'main', mergeCommit: HEX('b'), actualFiles: [] },
+      }),
+    ],
+  })
+  const merged = await rig.api.perform('mergeRequest', { id: 'T-940' }, { projectPath: PROJECT, by: '@user', role: 'user', agent: null })
+  const retested = await rig.card('T-940')
+  const starts = taskAgents.calls.filter((call) => call.kind === 'startTester' && call.taskId === 'T-940')
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  const afterSweep = await rig.card('T-940')
+
+  check('T-223 a baseline retest starts ONE tester through the coordinator and records it', () => {
+    assert.equal(merged.ok, true, JSON.stringify(merged).slice(0, 900))
+    assert.equal(merged.retest, true, JSON.stringify({ retest: merged.retest, stage: merged.stage }))
+    assert.equal(calls.filter((call) => call.kind === 'mergeCandidate').length, 1)
+    assert.equal(starts.length, 1, 'startTester calls: ' + JSON.stringify(starts.map((call) => call.agentId)))
+    assert.equal(retested.test.status, 'pending')
+    assert.equal(retested.test.deliveredTo.id, starts[0].agentId, 'the retest tester is not recorded on the card')
+    assert.equal(retested.test.deliveredTo.generation, 1, 'the retest delivery has no generation')
+    assert.equal(taskAgents.live.has(starts[0].agentId), true, 'the retest tester is not live')
+  })
+  check('T-223 a later recovery pass reuses the retest tester instead of spawning a second', () => {
+    assert.equal(sweep.ok, true, JSON.stringify(sweep).slice(0, 700))
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'startTester' && call.taskId === 'T-940').length, 1, 'the recovery pass started a second tester')
+    assert.equal(Array.from(taskAgents.live).filter((id) => String(id).indexOf('tester-') === 0).length, 1, JSON.stringify(Array.from(taskAgents.live)))
+    assert.equal(afterSweep.test.deliveredTo.id, retested.test.deliveredTo.id, 'the recorded tester moved on its own')
+  })
+  rig.scheduler.dispose()
 }
 
 const failedChecks = checks.filter((row) => !row.ok)
