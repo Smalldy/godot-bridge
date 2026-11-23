@@ -527,7 +527,9 @@ function createDecisionOverlay(deps) {
 							key: current.id,
 							decision: current,
 							queueLeft: count - 1,
-							receivedAt: snapshot.receivedAt,
+							// T-235 review: count down from the QUEUE receipt (the same baseline the
+							// panel modal uses), not from the board snapshot's receipt.
+							receivedAt: snapshot.decisionsReceivedAt === undefined || snapshot.decisionsReceivedAt === null ? snapshot.receivedAt : snapshot.decisionsReceivedAt,
 							t: t,
 							busy: submitting || storeBusy,
 							error: error,

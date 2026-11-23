@@ -295,7 +295,7 @@ async function updateDecisionStore(io, options, mutate) {
  * the write produced: a browser can drop that one request and refuse an older
  * decisionList answer instead of refreshing the whole queue.
  */
-function answeredWithRevision(outcome, written) {
+function withCommittedRevision(outcome, written) {
   if (outcome === null || outcome === undefined) return written
   if (outcome.ok === true && written !== null && written !== undefined && written.ok === true) {
     return Object.assign({}, outcome, { decisionRevision: written.store.revision })
@@ -672,7 +672,7 @@ export function createDecisionStore(io, options) {
       outcome = { ok: true, decision: decisionView(drafted.record, now), created: true, duplicate: false }
       return store
     })
-    return answeredWithRevision(outcome, written)
+    return withCommittedRevision(outcome, written)
   }
 
   /** Resolve one pending request. Exactly one answer ever lands. */
@@ -741,7 +741,7 @@ export function createDecisionStore(io, options) {
       outcome = { ok: true, decision: decisionView(record, now) }
       return store
     })
-    return answeredWithRevision(outcome, written)
+    return withCommittedRevision(outcome, written)
   }
 
   /** Cancel a pending request from the host/lifecycle side (never an answer). */
@@ -772,7 +772,7 @@ export function createDecisionStore(io, options) {
       outcome = { ok: true, decision: decisionView(record, now) }
       return store
     })
-    return answeredWithRevision(outcome, written)
+    return withCommittedRevision(outcome, written)
   }
 
   /**

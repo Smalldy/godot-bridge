@@ -339,6 +339,49 @@ console.log('PASS  40-tail + the shipped bundle register the shell.overlay decis
   )
   assert.ok(bundle.includes('startDecisionsPolling'), 'the shipped bundle carries the shared cadence')
   assert.ok(bundle.includes('decisionRevision'), 'the shipped bundle carries the revision guard')
+
+  // T-235 review: the docked card is handed the QUEUE receipt, not the board one.
+  // /state still moves snapshot.receivedAt; the countdown must not move with it.
+  let nowMs = 2000000
+  const overlayStoreDeps = {
+    TC_STATE_URL: '/state',
+    TC_WORKTREES_URL: '/worktrees',
+    TC_TASK_URL: '/task',
+    TC_LIST_URL: '/list',
+    TC_ACTION_URL: '/action',
+    tcSnapshot: (payload, source, message) => ({ ok: payload.ok === true, project: null, source: source, message: message, tasks: [], counts: {}, details: {}, seq: null, activityEvents: null, actionResult: null, actionError: null }),
+    tcPinnedProject: () => null,
+    tcMergeSnapshot: (previous, payload) => Object.assign({}, previous, payload, { source: 'host' }),
+    tcErrorMessage: () => 'error',
+    tcWithSession: (url) => url,
+    tcSessionId: () => 'session-clock',
+    tcPinProject: () => {},
+    tcNow: () => nowMs,
+  }
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body)
+    assert.equal(body.action, 'decisionList')
+    return { json: async () => ({ ok: true, decisions: [decision({ id: 'DEC-CLOCK', remainingMs: 60000 })], counts: { pending: 1 }, decisionRevision: 4 }) }
+  }
+  const clockStore = createTaskStore((key) => key, overlayStoreDeps)
+  await clockStore.loadDecisions()
+  const ClockOverlay = createDecisionOverlay({
+    React: React,
+    h: h,
+    DecisionModal: DecisionModal,
+    store: clockStore,
+    useTranslate: () => t,
+    useSnapshot: () => clockStore.getSnapshot(),
+    tcErrorMessage: () => 'error',
+  })
+  ClockOverlay.state.open = true
+  const docked = ClockOverlay({})
+  const dockedCard = find(docked, (node) => node.type === DecisionModal.DecisionCard)
+  assert.ok(dockedCard !== null, 'the clocked queue renders the docked card')
+  assert.equal(dockedCard.props.receivedAt, 2000000, 'the docked card counts down from the QUEUE receipt')
+  assert.ok(OVERLAY.includes('decisionsReceivedAt'), 'the overlay reads the queue baseline, not snapshot.receivedAt')
+  assert.ok(bundle.includes('decisionsReceivedAt'), 'the shipped bundle carries the queue-countdown baseline')
+  globalThis.fetch = async () => ({ json: async () => ({ ok: true }) })
 }
 console.log('PASS  T-235 the overlay shares the decisions domain and cadence with the panel')
 
@@ -635,6 +678,7 @@ console.log('PASS  T-211 a Host decisionList answer is visible in the conversati
       SettingsPage: stubView('settings-page'),
       engineScopeOf: () => null,
       ProjectForm: stubView('project-form'),
+      DecisionModal: DecisionModal,
       useTranslate: () => t,
       useSnapshot: () => snap,
       useNow: () => 1000,
@@ -674,6 +718,13 @@ console.log('PASS  T-211 a Host decisionList answer is visible in the conversati
   assert.equal(fallbackOf(withOverlay), null, 'no duplicate entry while the shell overlay is mounted')
   const emptyPanel = createTaskCenter(panelDeps(panelSnapshot([]), {}))({})
   assert.equal(fallbackOf(emptyPanel), null, 'no fallback without a pending decision')
+  // T-235 review: the panel modal counts down from the QUEUE receipt too.
+  const baselineSnapshot = Object.assign(panelSnapshot(pending), { receivedAt: 900, decisionsReceivedAt: 1200 })
+  const baselinePanel = createTaskCenter(panelDeps(baselineSnapshot, {}))({})
+  const panelModal = find(baselinePanel, (node) => node.type === DecisionModal)
+  assert.ok(panelModal !== null, 'the panel renders the decision modal for a pending queue')
+  assert.equal(panelModal.props.receivedAt, 1200, 'the panel modal counts down from the QUEUE receipt')
+
 }
 console.log('PASS  T-211 the panel header falls back to a clickable entry only when shell.overlay is absent')
 

@@ -3937,10 +3937,10 @@ const createTaskStore = (function () {
 					})
 				}
 				if (Number.isFinite(revision) && (state.revision === null || revision > state.revision)) state.revision = revision
-				if (state.decisions !== null) {
-					state.receivedAt = now()
-					keep('ready', null)
-				}
+				// The queue receipt is NOT moved here: the surviving decisions keep the
+				// remainingMs values of the answer that produced them, and their countdown
+				// must keep running from THAT receipt. Only seed()/succeed() re-measure it.
+				if (state.decisions !== null) keep('ready', null)
 				return true
 			}
 			function reset(scope) {
@@ -4015,8 +4015,9 @@ const createTaskStore = (function () {
 				counts: {},
 			}, 'loading', '')
 			// T-235: the pending queue has ONE owner — the decisions domain. The
-			// snapshot's decisions / decisionRevision / decisionsStatus are projections
-			// of it, and a /state answer only BOOTSTRAPS it (see seedDecisions).
+			// snapshot's decisions / decisionRevision / decisionsReceivedAt are
+			// projections of it, and a /state answer only BOOTSTRAPS it (see
+			// seedDecisions); it never re-measures the queue.
 			const decisionDomain = tcCreateDecisionCache({ name: 'decisions', now: clock })
 			// T-198: the resolved decision policy (settings page). Carried exactly
 			// like the decision queue: server-owned, never derived in the browser.
@@ -4112,6 +4113,21 @@ const createTaskStore = (function () {
 				if (typeof value !== 'string' || value === '') return null
 				const text = String(value).replace(/\\/g, '/').replace(/\/+$/, '')
 				return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
+			}
+
+			/**
+			 * T-235: is this a real project SWITCH, or the first answer that merely RESOLVES
+			 * the session project (null -> '/repo')?
+			 *
+			 * The distinction matters for the decisions domain: the 5 s list poll can seed
+			 * the queue before the first /state answer knows the project, and that very
+			 * project is what the unpinned list request already described. Resetting there
+			 * would blank a live queue for up to one cadence interval. A switch between two
+			 * KNOWN projects (or into 'no project') still clears it.
+			 */
+			function projectSwitched(previous, next) {
+				if (previous === next) return false
+				return !(previous === null && next !== null)
 			}
 
 			/** The board data on screen (the domain, or the first-paint fallback). */
@@ -4219,12 +4235,14 @@ const createTaskStore = (function () {
 				next.actionResult = actionResult
 				next.actionError = actionError
 				next.receivedAt = receivedAt
-				// T-235: the queue, the revision it describes and the domain's own status.
-				// BOTH decision surfaces read exactly these three fields.
+				// T-235 review: the queue, the revision it describes and the receipt of the
+				// answer that produced its remainingMs values. BOTH decision surfaces read
+				// exactly these three fields; the countdown MUST use decisionsReceivedAt,
+				// never the board receipt (a /state answer does not re-measure the queue).
 				const decisionView = decisionDomain.view()
 				next.decisions = decisionView.decisions
 				next.decisionRevision = decisionView.revision
-				next.decisionsStatus = decisionView.status
+				next.decisionsReceivedAt = decisionView.receivedAt
 				next.decisionPolicy = decisionPolicy
 				next.details = detailDomain.compose(next.tasks)
 				const project = projectKeyOf(next.project)
@@ -4510,7 +4528,9 @@ const createTaskStore = (function () {
 								activityCursor = null
 								resetMetaDomain(next.project)
 								clearDetails()
-								decisionDomain.reset(nextProject)
+								// T-235 review: reset only on a REAL switch; null -> '/repo' is the
+								// first answer resolving the session project the queue already describes.
+								if (projectSwitched(previousProject, nextProject)) decisionDomain.reset(nextProject)
 								// T-208: decision ids are project-scoped; an id answered in project A
 								// must not block the same id in project B.
 								answeredDecisions.clear()
@@ -4684,8 +4704,9 @@ const createTaskStore = (function () {
 								activityCursor = null
 								resetMetaDomain(next.project)
 								clearDetails()
-								// T-235: decision ids are project-scoped, so the queue is dropped too.
-								decisionDomain.reset(nextProject)
+								// T-235: decision ids are project-scoped, so a real switch drops the
+								// queue (a first resolution of the session project does not).
+								if (projectSwitched(previousProject, nextProject)) decisionDomain.reset(nextProject)
 								answeredDecisions.clear()
 							}
 							absorbDecisionPolicy(host)
@@ -5080,6 +5101,9 @@ const createTaskStore = (function () {
 				if (switched) {
 					resetMetaDomain(next)
 					clearDetails()
+					// T-235: a host that echoed no snapshot leaves the OLD project's queue
+					// behind; the new project's own answers seed the domain again.
+					decisionDomain.reset(key)
 					activityLog = []
 					activityCursor = null
 				}
@@ -5217,9 +5241,6 @@ const createTaskStore = (function () {
 					detail: detailDomain,
 					decisions: decisionDomain,
 				},
-				// T-235: the queue's selector: the last GOOD pending list plus the server
-				// revision it describes (the panel modal and the shell overlay share it).
-				decisionsView: decisionDomain.view,
 				META_STALE_MS: META_STALE_MS,
 				load: load,
 				loadMeta: loadMeta,
@@ -13739,7 +13760,10 @@ function createTaskCenter(deps) {
 			key: decisionQueue[0].id,
 			t: t,
 			queue: decisionQueue,
-			receivedAt: snapshot.receivedAt,
+			// T-235 review: the countdown baseline is the receipt of the QUEUE that
+			// produced remainingMs (a board poll does not re-measure it), never the
+			// board receipt — otherwise the countdown stops moving.
+			receivedAt: snapshot.decisionsReceivedAt === undefined || snapshot.decisionsReceivedAt === null ? snapshot.receivedAt : snapshot.decisionsReceivedAt,
 			busy: busy !== null && busy.action === 'decisionAnswer',
 			onAnswer: answerDecision,
 			onOpenTask: openTaskFromDecision,
@@ -14333,7 +14357,9 @@ function createDecisionOverlay(deps) {
 							key: current.id,
 							decision: current,
 							queueLeft: count - 1,
-							receivedAt: snapshot.receivedAt,
+							// T-235 review: count down from the QUEUE receipt (the same baseline the
+							// panel modal uses), not from the board snapshot's receipt.
+							receivedAt: snapshot.decisionsReceivedAt === undefined || snapshot.decisionsReceivedAt === null ? snapshot.receivedAt : snapshot.decisionsReceivedAt,
 							t: t,
 							busy: submitting || storeBusy,
 							error: error,

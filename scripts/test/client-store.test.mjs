@@ -909,10 +909,10 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-A'])
   assert.equal(revisionStore.getSnapshot().decisionRevision, 5, 'the queue names the server revision it describes')
   assert.equal(revisionStore.domains.decisions.state().status, 'ready')
-  // The panel modal and the shell overlay both read this ONE projection, so the
-  // two surfaces can never show different queues.
-  assert.deepEqual(revisionStore.decisionsView().decisions, revisionStore.getSnapshot().decisions, 'both surfaces read the SAME decisions selector')
-  assert.equal(revisionStore.decisionsView().revision, revisionStore.getSnapshot().decisionRevision, 'and the same revision')
+  // The panel modal and the shell overlay both read this ONE compatible snapshot,
+  // so the two surfaces can never show different queues.
+  assert.deepEqual(revisionStore.domains.decisions.state().decisions, revisionStore.getSnapshot().decisions, 'the snapshot projects the SAME queue the domain owns')
+  assert.equal(revisionStore.domains.decisions.state().revision, revisionStore.getSnapshot().decisionRevision, 'and the same revision')
 
   // 2) The panel and the shell overlay register on ONE cadence: two surfaces,
   //    ONE timer, ONE decisionList — and the last one leaving stops it.
@@ -1003,6 +1003,79 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-B2'], 'the new project seeds its own queue')
   assert.equal(revisionStore.getSnapshot().decisionRevision, 20, 'the new project revision replaces the old one')
   console.log('PASS  T-235 one shared decisions domain keeps the newest revision and drops stale answers')
+}
+
+
+// ── T-235 review: the countdown baseline is the QUEUE receipt ───────────────
+//
+// /state still bumps the board receipt (agent-sidebar uses it as the snapshot
+// generation) but no longer refreshes `decisions`. The modal must therefore count
+// down from the receipt of the QUEUE answer that produced remainingMs, not from
+// the latest board answer, or the shown seconds freeze and then jump back.
+{
+  let now = 1000000
+  const timedDeps = Object.assign({}, deps, { tcNow: () => now })
+  globalThis.fetch = async (url, options) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/meta') === 0) {
+      return { json: async () => ({ ok: true, project: '/repo', meta: { agentTree: { available: true, root: { id: 's', name: 'lead' }, members: [], count: 0, error: null } }, errors: {}, metadata: { split: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/action') === 0) {
+      const body = JSON.parse(options.body)
+      assert.equal(body.action, 'decisionList')
+      return {
+        json: async () => ({
+          ok: true,
+          decisions: [{ id: 'DEC-CLOCK', status: 'pending', remainingMs: 60000, timeoutAt: new Date(now + 60000).toISOString(), autoRunAllowed: true, defaultOption: 'go', options: [{ id: 'go', label: 'go', default: true }] }],
+          counts: { pending: 1 },
+          decisionRevision: 3,
+        }),
+      }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const { createDecisionModal } = require('../../client/src/views/decision-modal.cjs')
+  const modalModule = createDecisionModal({
+    React: { useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}], useEffect: () => {}, useRef: () => ({ current: null }) },
+    h: (type, props) => ({ type: type, props: props }),
+  })
+  const clockStore = createTaskStore((key) => key, timedDeps)
+  await clockStore.loadDecisions()
+  const landed = clockStore.getSnapshot()
+  assert.equal(landed.decisions[0].remainingMs, 60000)
+  assert.equal(landed.decisionsReceivedAt, 1000000, 'the queue records the receipt of ITS answer')
+
+  // Good /state polls move the BOARD receipt (the sidebar generation), never the
+  // queue baseline: they did not re-measure remainingMs.
+  now = 1002500
+  await clockStore.load()
+  assert.equal(clockStore.getSnapshot().source, 'host')
+  assert.equal(clockStore.getSnapshot().receivedAt, 1002500, 'the board receipt still moves')
+  assert.equal(clockStore.getSnapshot().decisionsReceivedAt, 1000000, 'a board answer does not re-measure the queue')
+  now = 1005000
+  await clockStore.load()
+  assert.equal(clockStore.getSnapshot().decisionsReceivedAt, 1000000)
+  // The routine 2.5 s cadence keeps answering /state all the way to +30 s.
+  for (let later = now + 2500; later <= 1030000; later += 2500) {
+    now = later
+    await clockStore.load()
+  }
+
+  // At +30 s the REAL formula (decision-modal.cjs) reads ~30 s, not 60 s.
+  now = 1030000
+  const at30 = clockStore.getSnapshot()
+  assert.equal(at30.receivedAt, 1030000, 'the board receipt tracks the latest /state answer')
+  const shown = modalModule.decisionRemainingSeconds(at30.decisions[0], at30.decisionsReceivedAt, now)
+  assert.equal(shown, 30, 'at +30 s the countdown reads ~30 s, not 60 s')
+  const frozen = modalModule.decisionRemainingSeconds(at30.decisions[0], at30.receivedAt, now)
+  assert.ok(frozen >= 59, 'the board-receipt baseline is what froze the countdown (' + frozen + ' s)')
+  // Both surfaces are handed this one baseline: the snapshot projects the domain
+  // receipt, and task-center.cjs / decision-overlay.cjs pass it to their card.
+  assert.equal(clockStore.domains.decisions.state().receivedAt, at30.decisionsReceivedAt, 'the snapshot projects the domain receipt')
+  console.log('PASS  T-235 review the countdown baseline is the queue receipt, not the board poll')
 }
 
 const poll = globalThis.setInterval
