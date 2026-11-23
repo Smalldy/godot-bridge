@@ -415,10 +415,26 @@ export function createState(ctx, options) {
     return ref
   }
 
+  /**
+   * Read the board through the state layer.
+   *
+   * T-232: the read is cache-backed — an unchanged stat answers from the parsed
+   * board without decoding the file (updateBoard's write path is the one reader
+   * that bypasses it). `cached` says whether THIS read paid a decode, and `size`
+   * is the byte size of the board the caller is holding, so a surface that warns
+   * about the board's size does not have to stat the file a second time.
+   */
   async function read(projectPath) {
     const result = await readBoard({ fs: ctx.fs }, { projectPath: projectPath, now: clock() })
     if (result.ok === false) return { failed: result }
-    return { failed: null, board: result.board, existed: result.existed }
+    return {
+      failed: null,
+      board: result.board,
+      existed: result.existed,
+      version: result.version,
+      size: result.size,
+      cached: result.cached === true,
+    }
   }
 
   /**

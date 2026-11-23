@@ -4,6 +4,7 @@
 
 import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
 import { pruneBoundedCache } from '../../plugin/task-center/api.mjs'
+import { boardPath } from '../../plugin/task-center/board.mjs'
 import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
 
 let failures = 0
@@ -742,6 +743,82 @@ function seedManyCards(rig, count) {
   console.log(
     'PASS  T-210 200 cards: core ' + String(coreMs) + 'ms (<200, ' + String(coreBytes) + 'B), warm metadata ' + String(warmMs) + 'ms (<2000, ' + String(JSON.stringify(warmPayload).length) + 'B), board ' + String(boardBytes) + 'B',
   )
+}
+
+// ── T-232: ONE board decode per file version, not one per request ──────────
+// The 5.24 MB board used to be read + JSON.parse'd by every /state, /meta and
+// action answer. The read layer is now stat-validated and cached, so a warm poll
+// decodes zero boards and a write never reads through the memo — while the answer
+// is still exactly the file the write landed. Counted at the fs boundary, and
+// cross-checked with the named timings counters the panel can ask for.
+{
+  const cacheRig = createRig({ taskAgents: createFakeTaskAgents() })
+  seedBoard(cacheRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, tasks: [{ id: 'T-1', title: 'first', status: 'pending', kind: 'dev' }] }))
+  const cacheSurface = install(cacheRig)
+  const boardFile = boardPath(PROJECT)
+  let boardReads = 0
+  const realReadText = cacheRig.fs.readText
+  cacheRig.fs.readText = async function (target, signal) {
+    if (String(target.targetKey) === boardFile) boardReads += 1
+    return realReadText.call(this, target, signal)
+  }
+  const poll = async (extra) => {
+    const res = await call(cacheSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&light=1&timings=1' + (extra === undefined ? '' : extra), {})
+    return res.json()
+  }
+  // The module-level post() targets the FIRST surface; this rig needs its own.
+  const postTo = async (body) => {
+    const res = response()
+    await cacheSurface.byPath.get(ACTION_PATH).handler(
+      request(ACTION_PATH + '?project=' + encodeURIComponent(PROJECT) + '&session=' + encodeURIComponent(TEST_SESSION), { method: 'POST', body: body, headers: { 'content-type': 'application/json' } }),
+      res,
+    )
+    return res
+  }
+  const cold = await poll()
+  check('T-232 the first poll decodes the board once', cold.ok === true && cold.counts.total === 1 && boardReads === 1, JSON.stringify({ ok: cold.ok, boardReads: boardReads }))
+  check('T-232 the cold poll names the decode', cold.timings.counts.boardParse === 1 && cold.timings.counts.boardCached === 0, JSON.stringify(cold.timings.counts))
+  const warm = await poll()
+  check('T-232 a second poll inside one version decodes NOTHING', warm.ok === true && warm.counts.total === 1 && boardReads === 1, JSON.stringify({ boardReads: boardReads }))
+  check('T-232 the warm poll proves the hit in its counters', warm.timings.counts.boardParse === 0 && warm.timings.counts.boardCached >= 1, JSON.stringify(warm.timings.counts))
+  check('T-232 the warm answer is still the board', Array.isArray(warm.tasks) && warm.tasks.length === 1 && warm.tasks[0].id === 'T-1' && warm.version !== undefined, warm.text === undefined ? '' : JSON.stringify({ tasks: warm.tasks.length }))
+
+  // /meta: a COLD metadata build still must not decode a board it can read from
+  // the memo, and a WARM one is the TTL answer plus the cached board.
+  const metaCold = (await call(cacheSurface, META_PATH + '?project=' + encodeURIComponent(PROJECT) + '&timings=1', {})).json()
+  check('T-232 a cold /meta reads the memo instead of decoding', metaCold.ok === true && metaCold.cache === 'miss' && metaCold.timings.counts.boardParse === 0 && boardReads === 1, JSON.stringify({ cache: metaCold.cache, counts: metaCold.timings === undefined ? null : metaCold.timings.counts, boardReads: boardReads }))
+  const metaWarm = (await call(cacheSurface, META_PATH + '?project=' + encodeURIComponent(PROJECT) + '&timings=1', {})).json()
+  check('T-232 a warm /meta is the TTL answer and decodes nothing', metaWarm.ok === true && metaWarm.cache === 'hit' && metaWarm.timings.counts.boardParse === 0 && boardReads === 1, JSON.stringify({ cache: metaWarm.cache, counts: metaWarm.timings === undefined ? null : metaWarm.timings.counts, boardReads: boardReads }))
+
+  // A real write: the write path reads the FILE (never the memo), and what it
+  // wrote becomes the memo — so the poll right after costs no decode but is new.
+  const created = (await postTo({ action: 'create', title: 'second', verification: { probes: [{ id: 'suite', command: 'npm test' }] } })).json()
+  check('T-232 the create writes through the file, not the memo', created.ok === true && boardReads === 2, JSON.stringify({ ok: created.ok, boardReads: boardReads }))
+  const afterWrite = await poll()
+  check('T-232 the poll after a write shows the new card', afterWrite.ok === true && afterWrite.counts.total === 2 && afterWrite.tasks.some((task) => task.id === created.task.id), JSON.stringify({ total: afterWrite.counts === undefined ? null : afterWrite.counts.total }))
+  check('T-232 ... and decodes nothing: the write refreshed the memo with what it wrote', afterWrite.timings.counts.boardParse === 0 && afterWrite.timings.counts.boardCached >= 1 && boardReads === 2, JSON.stringify({ counts: afterWrite.timings === undefined ? null : afterWrite.timings.counts, boardReads: boardReads }))
+
+  // The read-only routes share the same read: /list and /task do not re-decode.
+  const list = (await call(cacheSurface, LIST_PATH + '?project=' + encodeURIComponent(PROJECT), {})).json()
+  const detail = (await call(cacheSurface, TASK_PATH + '?project=' + encodeURIComponent(PROJECT) + '&id=' + encodeURIComponent('T-1'), {})).json()
+  check('T-232 the list and detail routes read the same memo', list.ok === true && detail.ok === true && boardReads === 2, JSON.stringify({ list: list.ok, detail: detail.ok, boardReads: boardReads }))
+
+  // openProject is the other hot path named in the task: binding twice must not
+  // decode the board again.
+  const openedOne = (await postTo({ action: 'openProject', path: PROJECT })).json()
+  const openedTwo = (await postTo({ action: 'openProject', path: PROJECT })).json()
+  check(
+    'T-232 a repeated openProject is answered off the memo, not a re-decode',
+    openedOne.ok === true && openedTwo.ok === true && boardReads === 2 && Array.isArray(openedTwo.tasks) && openedTwo.tasks.length === 2,
+    JSON.stringify({ ok: openedOne.ok, boardReads: boardReads, tasks: openedTwo.tasks === undefined ? null : openedTwo.tasks.length }),
+  )
+
+  // Another process writes the board: the next poll MUST decode the new file and
+  // must not answer from anything this host remembered.
+  cacheRig.fs.files.set(boardFile, { text: JSON.stringify({ version: 2, seq: 7, tasks: [{ id: 'T-7', title: 'foreign', status: 'pending', kind: 'dev' }] }), version: 'v-foreign' })
+  const foreign = await poll()
+  check('T-232 a write by another process is seen on the next poll', foreign.ok === true && boardReads === 3 && foreign.counts.total === 1 && foreign.tasks[0].id === 'T-7' && foreign.timings.counts.boardParse === 1, JSON.stringify({ boardReads: boardReads, ids: foreign.tasks === undefined ? null : foreign.tasks.map((task) => task.id), counts: foreign.timings === undefined ? null : foreign.timings.counts }))
+  console.log('PASS  T-232 board reads are stat-validated: warm polls decode nothing, writes and foreign edits are never stale')
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')

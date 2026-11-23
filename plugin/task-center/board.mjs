@@ -924,14 +924,11 @@ async function writeOnce(io, options, board, version) {
       signal: options.signal,
     })
     const expected = version === null ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: version }
-    const outcome = await io.fs.writeText(
-      target,
-      JSON.stringify(board, null, 2) + '\n',
-      expected,
-      options.signal,
-      options.sandboxPolicy,
-    )
-    return { ok: true, version: outcome.version }
+    const text = JSON.stringify(board, null, 2) + '\n'
+    const outcome = await io.fs.writeText(target, text, expected, options.signal, options.sandboxPolicy)
+    // bytes: the size of what landed, so the read cache can describe the written
+    // board without pairing a write with a second read (T-232).
+    return { ok: true, version: outcome.version, bytes: Buffer.byteLength(text, 'utf8') }
   } catch (error) {
     return failure(isStale(error) ? 'stale' : 'unwritable', describe(error))
   }
@@ -979,38 +976,238 @@ export function boardSizeReport(bytes, cards, limit) {
   }
 }
 
+// ── the parsed-board cache (T-232) ─────────────────────────────────────────
+// Every board answer used to decode the WHOLE tasks.json: 5.24 MB for ~220 cards,
+// paid again by the panel's poll, the scheduler's tick, /state and /meta. This
+// cache keeps one PARSED board per (fs, board path) and accepts it only while the
+// file's stat identity (version/size/mtime) is unchanged:
+//
+//   - a repeated read is one stat + a Map lookup: no readText, no JSON.parse;
+//   - a write by ANY process (another instance, the panel, a hand edit) changes
+//     the identity, so the next read decodes the new file — a cached board can
+//     never outlive the file it came from;
+//   - updateBoard never reads THROUGH the cache, and after its write lands it
+//     caches WHAT IT WROTE, so the first read after a write is the written board
+//     (never a pre-write snapshot);
+//   - two concurrent first reads of one version share ONE decode (single flight);
+//   - the fs OBJECT is part of the key, so two hosts (or two test rigs) that use
+//     the same path can never be served each other's board;
+//   - the memo is in memory only, bounded to the projects recently read.
+//
+// A cached board is SHARED data: treat it as immutable. Every caller that mutates
+// a board does so on the fresh copy updateBoard read for it — never on this one.
+
+// How many projects stay parsed in one host. A 5 MB board is ~15-20 MB of live
+// JS objects once parsed, so this is a MEMORY bound, not a hit-rate knob: 8 keeps
+// the handful of projects a host actually polls warm (~160 MB worst case, and only
+// if every one of them is read) and evicts the rest. 0 disables the memo — every
+// read decodes the file again, which is the correct-but-slow fallback.
+const BOARD_CACHE_PROJECTS = (() => {
+  const raw = Number(process.env.GODOT_BRIDGE_BOARD_CACHE_PROJECTS)
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 8
+})()
+const BOARD_CACHES = new WeakMap()
+const BOARD_FLIGHTS = new WeakMap()
+const BOARD_CACHE_STATS = new WeakMap()
+
+/** One Map per fs (so a path alone is never a key), or null when there is no fs. */
+function boardMapFor(store, fs) {
+  if (fs === null || (typeof fs !== 'object' && typeof fs !== 'function')) return null
+  let map = store.get(fs)
+  if (map === undefined) {
+    map = new Map()
+    store.set(fs, map)
+  }
+  return map
+}
+
+/** Per-fs read counters: a cache hit is a decode this host did NOT pay for. */
+function boardStatsFor(fs) {
+  if (fs === null || (typeof fs !== 'object' && typeof fs !== 'function')) return { parses: 0, hits: 0, flights: 0, evictions: 0 }
+  let stats = BOARD_CACHE_STATS.get(fs)
+  if (stats === undefined) {
+    stats = { parses: 0, hits: 0, flights: 0, evictions: 0 }
+    BOARD_CACHE_STATS.set(fs, stats)
+  }
+  return stats
+}
+
+/**
+ * The read-through counters of ONE fs, so a request can measure "did I decode the
+ * board?" by taking a baseline and subtracting (the shape the host-read counters
+ * already use). Never process-global numbers attributed to the wrong host.
+ */
+export function boardCacheStats(fs) {
+  return Object.assign({}, boardStatsFor(fs))
+}
+
+/** The stat facts a cached board is validated against; '' for a field the facade omits. */
+function statStamp(info) {
+  if (info === null || typeof info !== 'object') return null
+  const mtime = info.mtimeMs !== undefined ? info.mtimeMs : info.mtime
+  const at = mtime instanceof Date ? mtime.getTime() : mtime
+  // Without a version, a size or an mtime there is NOTHING to validate a memo
+  // against, so this facade is never cached (correct, just slower): a bare `type`
+  // would let every rewrite of the file look like a hit.
+  const discriminates = [info.version, info.size, at].some((value) => value !== undefined && value !== null)
+  if (discriminates !== true) return null
+  return [info.type, info.version, info.size, at].map((value) => (value === undefined || value === null ? '' : String(value))).join('|')
+}
+
+/** A stable key for one board: the resolved target, else the project's board path. */
+function boardKeyOf(target, fallback) {
+  const resolved =
+    target === null || target === undefined ? undefined : target.targetKey === undefined || target.targetKey === null ? target.displayPath : target.targetKey
+  return resolved === undefined || resolved === null ? String(fallback) : String(resolved)
+}
+
+/** Store one parsed board in its newest slot; the least recently read project is evicted. */
+function rememberBoard(cache, key, stamp, result, stats) {
+  cache.delete(key)
+  cache.set(key, { stamp: stamp, result: result })
+  while (cache.size > BOARD_CACHE_PROJECTS) {
+    const oldest = cache.keys().next()
+    if (oldest.done === true) break
+    cache.delete(oldest.value)
+    if (stats !== null) stats.evictions += 1
+  }
+}
+
+/** Drop the entry for one board: a failed or newer read proves the memo is not the file. */
+function forgetBoard(cache, key) {
+  if (cache !== null) cache.delete(key)
+}
+
+/**
+ * Decode one board from disk (the cache MISS path). Every failure is a VALUE, so
+ * a single-flight joiner never sees a rejection. The entry is stored only after a
+ * full, successful decode, stamped with the stat this read was validated against.
+ */
+async function decodeBoard(io, options, target, info, now, cache, key, stats) {
+  const text = await io.fs.readText(target, options.signal)
+  const size = Buffer.byteLength(text, 'utf8')
+  if (size > MAX_BOARD_BYTES) {
+    forgetBoard(cache, key)
+    return failure('too-large', 'the board file is larger than ' + String(MAX_BOARD_BYTES) + ' bytes; refusing to load it')
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    forgetBoard(cache, key)
+    return failure('unparseable', 'the board file is not valid JSON, so it is left untouched: ' + describe(error))
+  }
+  const normalised = normaliseBoard(parsed, now)
+  if (normalised.ok !== true) {
+    forgetBoard(cache, key)
+    return normalised
+  }
+  if (stats !== null) stats.parses += 1
+  const result = { ok: true, board: normalised.board, version: info.version, existed: true, size: size, limit: MAX_BOARD_BYTES, cached: false }
+  const stamp = statStamp(info)
+  if (cache !== null && stamp !== null) rememberBoard(cache, key, stamp, result, stats)
+  return result
+}
+
+/**
+ * T-232: after a board write lands, cache WHAT WAS WRITTEN under the stat the file
+ * now reports, so the very next read is the written board instead of a decode.
+ * The stat is re-taken (the write answers its new version, not size/mtime); when
+ * it disagrees — another process wrote again — the entry is DROPPED so the next
+ * read decodes. A refresh failure is never a write failure: it only costs a decode.
+ */
+async function rememberWrittenBoard(io, options, board, written) {
+  const path = boardPath(options.projectPath)
+  const cache = boardMapFor(BOARD_CACHES, io.fs)
+  if (cache === null) return
+  let key = boardKeyOf(null, path)
+  try {
+    const target = await io.fs.resolve(path, { cwd: options.projectPath })
+    key = boardKeyOf(target, path)
+    const bytes = Number.isFinite(written.bytes) ? written.bytes : null
+    const info = await io.fs.stat(target)
+    const stamp = info === undefined ? null : statStamp(info)
+    if (info === undefined || String(info.version) !== String(written.version) || bytes === null || bytes > MAX_BOARD_BYTES || stamp === null) {
+      forgetBoard(cache, key)
+      return
+    }
+    rememberBoard(
+      cache,
+      key,
+      stamp,
+      { ok: true, board: board, version: written.version, existed: true, size: bytes, limit: MAX_BOARD_BYTES, cached: false },
+      boardStatsFor(io.fs),
+    )
+  } catch (error) {
+    forgetBoard(cache, key)
+  }
+}
+
 /**
  * Read and validate the board.
  *
- * @returns { ok: true, board, version, existed, size, limit } or { ok: false, code, message }
- *   with code too-large, unparseable, unrecognisable, unsupported-version,
- *   invalid-task, duplicate-task or unreadable.
+ * @returns { ok: true, board, version, existed, size, limit, cached } or
+ *   { ok: false, code, message } with code too-large, unparseable, unrecognisable,
+ *   unsupported-version, invalid-task, duplicate-task or unreadable.
+ *   `cached: true` means THIS call did not decode the file: a stat validated memo
+ *   answered it, or it joined a read already in flight for the same version.
+ *
+ * `options.cache: false` is the WRITE path (updateBoard's read): it must see the
+ * file as it is, never a memo of it. Every other read stays stat-validated.
  */
 export async function readBoard(io, options) {
   const now = typeof options.now === 'number' ? options.now : Date.now()
+  const viaCache = options.cache !== false
+  const cache = viaCache ? boardMapFor(BOARD_CACHES, io.fs) : null
+  const flights = viaCache ? boardMapFor(BOARD_FLIGHTS, io.fs) : null
+  const stats = viaCache ? boardStatsFor(io.fs) : null
   try {
-    const target = await io.fs.resolve(boardPath(options.projectPath), {
+    const path = boardPath(options.projectPath)
+    const target = await io.fs.resolve(path, {
       cwd: options.projectPath,
       signal: options.signal,
     })
+    const key = boardKeyOf(target, path)
     const info = await io.fs.stat(target, options.signal)
-    if (info === undefined) return { ok: true, board: emptyBoard(now), version: null, existed: false, size: 0, limit: MAX_BOARD_BYTES }
+    if (info === undefined) {
+      forgetBoard(cache, key)
+      return { ok: true, board: emptyBoard(now), version: null, existed: false, size: 0, limit: MAX_BOARD_BYTES, cached: false }
+    }
     if (Number.isFinite(info.size) && info.size > MAX_BOARD_BYTES) {
+      forgetBoard(cache, key)
       return failure('too-large', 'the board file is ' + String(info.size) + ' bytes; refusing to load more than ' + String(MAX_BOARD_BYTES))
     }
-    const text = await io.fs.readText(target, options.signal)
-    if (Buffer.byteLength(text, 'utf8') > MAX_BOARD_BYTES) {
-      return failure('too-large', 'the board file is larger than ' + String(MAX_BOARD_BYTES) + ' bytes; refusing to load it')
+    const stamp = statStamp(info)
+    if (cache !== null && stamp !== null) {
+      const hit = cache.get(key)
+      if (hit !== undefined && hit.stamp === stamp) {
+        stats.hits += 1
+        // Re-insert so eviction drops the project that was read least recently.
+        cache.delete(key)
+        cache.set(key, hit)
+        return Object.assign({}, hit.result, { cached: true })
+      }
     }
-    let parsed
+    if (flights !== null && stamp !== null) {
+      const running = flights.get(key)
+      if (running !== undefined && running.stamp === stamp) {
+        // One decode serves both readers: the second one never touches the file.
+        stats.flights += 1
+        const shared = await running.promise
+        if (shared === null || shared === undefined) return failure('unreadable', 'the board read produced no answer')
+        return shared.ok === true ? Object.assign({}, shared, { cached: true }) : shared
+      }
+    }
+    // No memo and no identity to join on: this read decodes on its own.
+    if (flights === null || stamp === null) return await decodeBoard(io, options, target, info, now, cache, key, stats)
+    const promise = decodeBoard(io, options, target, info, now, cache, key, stats)
+    flights.set(key, { stamp: stamp, promise: promise })
     try {
-      parsed = JSON.parse(text)
-    } catch (error) {
-      return failure('unparseable', 'the board file is not valid JSON, so it is left untouched: ' + describe(error))
+      return await promise
+    } finally {
+      const running = flights.get(key)
+      if (running !== undefined && running.promise === promise) flights.delete(key)
     }
-    const normalised = normaliseBoard(parsed, now)
-    if (normalised.ok !== true) return normalised
-    return { ok: true, board: normalised.board, version: info.version, existed: true, size: Buffer.byteLength(text, 'utf8'), limit: MAX_BOARD_BYTES }
   } catch (error) {
     return failure('unreadable', describe(error))
   }
@@ -1045,7 +1242,9 @@ export async function updateBoard(io, options) {
     let attempts = 0
     for (;;) {
       attempts += 1
-      const current = await readBoard(io, Object.assign({}, options, { now: now }))
+      // T-232: a write reads the FILE, never the memo. The mutation is applied to
+      // a fresh copy, so a cached board can never become the thing we overwrite.
+      const current = await readBoard(io, Object.assign({}, options, { now: now, cache: false }))
       if (!current.ok) return current
       const next = options.mutate(current.board, attempts)
       if (next === undefined || next === null) return failure('aborted', 'the mutator declined the change')
@@ -1053,7 +1252,12 @@ export async function updateBoard(io, options) {
       if (validated.ok !== true) return validated
       const payload = Object.assign({}, validated.board, { version: BOARD_VERSION, updatedAt: iso(now) })
       const written = await writeOnce(io, options, payload, current.version)
-      if (written.ok) return { ok: true, board: payload, version: written.version, attempts: attempts }
+      if (written.ok) {
+        // The answer is WHAT WAS WRITTEN (never the pre-write board), and the memo
+        // now holds that same board, so the read right after this one is free.
+        await rememberWrittenBoard(io, options, payload, written)
+        return { ok: true, board: payload, version: written.version, attempts: attempts }
+      }
       if (written.code !== 'stale' || attempts >= limit) return Object.assign({}, written, { attempts: attempts })
     }
   })

@@ -113,6 +113,7 @@ import {
   archiveIndexPath,
   archivePath,
   archiveYears,
+  boardCacheStats,
   boardPath,
   boardSizeReport,
   isArchivable,
@@ -609,6 +610,15 @@ export function createApi(ctx, options) {
     return value
   }
 
+  /** The board read-through counters of this host's fs (zeroes when it has none). */
+  function boardCounters() {
+    try {
+      return boardCacheStats(ctx === null || ctx === undefined ? null : ctx.fs)
+    } catch (error) {
+      return { parses: 0, hits: 0, flights: 0, evictions: 0 }
+    }
+  }
+
   /**
    * Per-request timing collector. `segments` is filled by guardedSegment() and
    * measure(); finish() adds the host-call counters of THIS request, which is
@@ -617,6 +627,9 @@ export function createApi(ctx, options) {
   function createTiming() {
     const segments = {}
     const baseline = Object.assign({}, hostReads)
+    // T-232: the board memo counters are measured like the host reads, so
+    // `timings=1` proves "this poll decoded zero boards" instead of implying it.
+    const boardBaseline = boardCounters()
     const startedAt = Date.now()
     return {
       segments: segments,
@@ -630,6 +643,7 @@ export function createApi(ctx, options) {
       },
 
       finish() {
+        const board = boardCounters()
         return {
           segments: Object.assign({}, segments),
           counts: {
@@ -637,6 +651,11 @@ export function createApi(ctx, options) {
             agentListCached: hostReads.agentListCached - baseline.agentListCached,
             sessionActivity: hostReads.sessionActivity - baseline.sessionActivity,
             sessionActivityCached: hostReads.sessionActivityCached - baseline.sessionActivityCached,
+            // T-232: board decodes this request paid for, and reads answered by the
+            // parsed-board memo (or a shared in-flight read) instead.
+            boardParse: board.parses - boardBaseline.parses,
+            boardCached: board.hits - boardBaseline.hits,
+            boardShared: board.flights - boardBaseline.flights,
           },
           totalMs: Date.now() - startedAt,
         }
@@ -2549,21 +2568,28 @@ export function createApi(ctx, options) {
   }
 
   async function readBoardOrFail(projectPath) {
+    // T-232: the board read is stat-validated and cache-backed, so `cached` here
+    // says this request did NOT decode the file. It travels with the board for the
+    // diagnostic timings; no caller has to know how the read was answered.
     const read = await state.read(projectPath)
     if (read.failed !== null) return { failed: read.failed }
-    return { board: read.board }
+    return { board: read.board, version: read.version, size: read.size, cached: read.cached === true }
   }
 
   /** How full the board FILE is (bytes vs the cap) for the panel's warning. The
-   * load path already refuses over the limit; this only describes the approach
-   * to it, so a read of the stat failing degrades to a null-size report. */
-  async function boardSizeOf(projectPath, board) {
-    let bytes = null
-    try {
-      const target = await ctx.fs.resolve(boardPath(projectPath), { cwd: projectPath })
-      const info = await ctx.fs.stat(target)
-      if (info !== undefined && info !== null && Number.isFinite(info.size)) bytes = info.size
-    } catch (error) {}
+   * load path already refuses over the limit; this only describes the approach to
+   * it. T-232: the read that produced `board` already knows its byte size, so the
+   * snapshot does not stat the 5 MB file a second time for a warning; the stat
+   * stays as the fallback for a caller that has no size. */
+  async function boardSizeOf(projectPath, board, size) {
+    let bytes = Number.isFinite(size) ? size : null
+    if (bytes === null) {
+      try {
+        const target = await ctx.fs.resolve(boardPath(projectPath), { cwd: projectPath })
+        const info = await ctx.fs.stat(target)
+        if (info !== undefined && info !== null && Number.isFinite(info.size)) bytes = info.size
+      } catch (error) {}
+    }
     return boardSizeReport(bytes, Array.isArray(board.tasks) ? board.tasks.length : 0)
   }
 
@@ -3942,12 +3968,11 @@ export function createApi(ctx, options) {
     const panelSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
     const timer = opts.timings === true ? createTiming() : null
     const segments = timer === null ? null : timer.segments
-    const readStarted = Date.now()
-    const read = await readBoardOrFail(projectPath)
-    if (read.failed !== undefined) return read.failed
-    const board = read.board
-    const now = clock()
-    if (segments !== null) segments.board = Date.now() - readStarted
+    // T-232: the TTL check runs BEFORE the board is read. It used to run after, so
+    // a warm /meta decoded the whole 5 MB board only to discover the answer was
+    // already known. The board is still read below (the activity timeline carries
+    // this request's cursor and cannot be served from the build), but on a warm
+    // answer that read is a stat-validated cache hit — a lookup, not a decode.
     const projectRef = projectRefOf(projectPath)
     const key = projectRef.id + '|' + (panelSession === null ? '' : panelSession)
     const fresh = opts.refresh === true
@@ -3962,6 +3987,12 @@ export function createApi(ctx, options) {
       value = cached.value
       cache = 'hit'
     }
+    const readStarted = Date.now()
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const board = read.board
+    const now = clock()
+    if (segments !== null) segments.board = Date.now() - readStarted
     if (value === null) {
       const flight = metaFlights.get(key)
       if (flight !== undefined) {
@@ -4139,7 +4170,7 @@ export function createApi(ctx, options) {
       tasks = allTasks.filter((task) => task.status !== 'done' || keepDone.has(String(task.id)))
     }
     const boardSizeStarted = Date.now()
-    const boardSize = await boardSizeOf(projectPath, board)
+    const boardSize = await boardSizeOf(projectPath, board, read.size)
     if (segments !== null) segments.boardSize = Date.now() - boardSizeStarted
     // T-195: the modal queue. The sweep runs on every snapshot so a SERVER
     // deadline is real even when no panel is polling; it only writes when a
