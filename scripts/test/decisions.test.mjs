@@ -260,6 +260,39 @@ function check(label, condition, detail) {
   check('the poll persisted the timeout default', stored.requests[0].status === 'expired' && stored.requests[0].resolution.option === 'create', JSON.stringify(stored.requests[0]))
 }
 
+// ── T-235: the queue's shared decisionRevision ──────────────────────────────
+//
+// decisionList, the /state bootstrap snapshot and decisionAnswer must all name
+// the SAME monotonically increasing revision, so a browser can order answers and
+// drop an older one instead of repainting a newer queue.
+{
+  const rig = freshRig()
+  const created = await rig.api.decisions.request(PROJECT, createInput({ id: 'DEC-20' }), {})
+  check('a request answers the queue revision it wrote', Number.isFinite(created.decisionRevision) && created.decisionRevision >= 1, JSON.stringify(created))
+  const listed = await rig.action('decisionList', { decisionStatus: 'pending' })
+  check('decisionList carries that same decisionRevision', listed.ok === true && listed.decisionRevision === created.decisionRevision, JSON.stringify({ list: listed.decisionRevision, request: created.decisionRevision }))
+  const revisionSnapshot = await rig.api.snapshot(PROJECT, { full: false })
+  check('the /state bootstrap snapshot carries the SAME revision', revisionSnapshot.decisionRevision === listed.decisionRevision, JSON.stringify({ snapshot: revisionSnapshot.decisionRevision, list: listed.decisionRevision }))
+  const answered = await rig.action('decisionAnswer', { decisionId: 'DEC-20', option: 'create' })
+  check('an answer answers a NEWER revision', answered.ok === true && Number.isFinite(answered.decisionRevision) && answered.decisionRevision > listed.decisionRevision, JSON.stringify(answered.decisionRevision))
+  const after = await rig.action('decisionList', { decisionStatus: 'pending' })
+  check('the next decisionList agrees with the answer revision', after.decisionRevision === answered.decisionRevision, JSON.stringify({ list: after.decisionRevision, answer: answered.decisionRevision }))
+  const restarted = createDecisionStore({ fs: rig.fs }, { now: now })
+  const recovered = await restarted.list(PROJECT, { status: 'pending' })
+  check('the revision survives a restart (it lives in the file)', recovered.ok === true && recovered.revision === after.decisionRevision, JSON.stringify({ recovered: recovered.revision, list: after.decisionRevision }))
+
+  // A file written before T-235 has no revision: it reads as 0 and the first
+  // write after the upgrade starts the sequence at 1.
+  rig.fs.files.set(decisionsPath(PROJECT), {
+    text: JSON.stringify({ version: 1, requests: [], updatedAt: '2026-11-19T00:00:00.000Z' }),
+    version: 'legacy',
+  })
+  const legacyList = await restarted.list(PROJECT, { status: 'pending' })
+  check('a pre-T-235 file reads as revision 0', legacyList.ok === true && legacyList.revision === 0, JSON.stringify(legacyList.revision))
+  const legacyWrite = await restarted.request(PROJECT, createInput({ id: 'DEC-30' }), { by: '@user' })
+  check('the first write after the upgrade starts at revision 1', legacyWrite.ok === true && legacyWrite.decisionRevision === 1, JSON.stringify(legacyWrite.decisionRevision))
+}
+
 
 // ── T-197: a dev timeout ASKS first; nothing is blocked or restarted ────────
 {

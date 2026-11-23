@@ -44,6 +44,9 @@ export function createDecisionActions(deps) {
     return ok({
       decisions: listed.decisions.map(decorate),
       counts: listed.counts,
+      // T-235: the queue generation this answer describes. Both client surfaces
+      // compare it against the one they already show and drop an older answer.
+      decisionRevision: Number.isFinite(listed.revision) ? listed.revision : null,
       expired: (Array.isArray(swept.expired) ? swept.expired : []).map(decorate),
       applied: applied,
       serverTime: new Date(now).toISOString(),
@@ -85,7 +88,14 @@ export function createDecisionActions(deps) {
     if (applyAnswered !== null) {
       applied = await applyAnswered(projectPath, result.decision)
     }
-    return ok({ decision: decorate(result.decision), applied: applied, serverTime: new Date(now).toISOString() })
+    return ok({
+      decision: decorate(result.decision),
+      // T-235: the NEW queue generation. A client drops exactly this request and
+      // refuses any older decisionList answer that would resurrect it.
+      decisionRevision: Number.isFinite(result.decisionRevision) ? result.decisionRevision : null,
+      applied: applied,
+      serverTime: new Date(now).toISOString(),
+    })
   }
 
   /**

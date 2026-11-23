@@ -1056,7 +1056,10 @@ function createTaskCenter(deps) {
 			key: decisionQueue[0].id,
 			t: t,
 			queue: decisionQueue,
-			receivedAt: snapshot.receivedAt,
+			// T-235 review: the countdown baseline is the receipt of the QUEUE that
+			// produced remainingMs (a board poll does not re-measure it), never the
+			// board receipt — otherwise the countdown stops moving.
+			receivedAt: snapshot.decisionsReceivedAt === undefined || snapshot.decisionsReceivedAt === null ? snapshot.receivedAt : snapshot.decisionsReceivedAt,
 			busy: busy !== null && busy.action === 'decisionAnswer',
 			onAnswer: answerDecision,
 			onOpenTask: openTaskFromDecision,

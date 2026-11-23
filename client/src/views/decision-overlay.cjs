@@ -15,11 +15,13 @@
  *     countdown/free text/high-risk DELETE confirmation. ONE decision is shown
  *     at a time; answering advances the queue automatically.
  *
- * The queue comes from the SHARED task store: the full snapshot already carries
- * `decisions`, and store.loadDecisions() polls only the decision list, so the
- * conversation page never pulls the whole board every few seconds. An answer
- * goes through the same store.send('decisionAnswer') as the panel modal, and
- * the store's one-shot guard is what stops the two surfaces from
+ * The queue comes from the SHARED task store: T-235 gives the pending list ONE
+ * owner (the decisions domain), fed by the store's ONE ref-counted 5 s cadence
+ * — the panel registers on the very same one — so the conversation page never
+ * pulls the whole board and two surfaces never run two decisionList polls. The
+ * snapshot's `decisions`/`decisionRevision` are projections of that domain. An
+ * answer goes through the same store.send('decisionAnswer') as the panel modal,
+ * and the store's one-shot guard is what stops the two surfaces from
  * double-submitting the same request.
  *
  * Placement (T-208, hardened in T-211): the entry is anchored inside the
@@ -352,9 +354,19 @@ function createDecisionOverlay(deps) {
 			}
 		}
 
-		// Poll ONLY the decision list (never the board) while the conversation
-		// page is open: this is the lightweight queue refresh the task asks for.
+		// T-235: the pending queue belongs to the SHARED decisions domain. This
+		// overlay registers on the store's ONE ref-counted cadence — the panel
+		// registers on the same one — so two mounted surfaces issue ONE
+		// decisionList per tick instead of each polling on its own. A store
+		// without the cadence API (an older bundle, a test double) keeps the
+		// pre-T-235 local interval.
 		React.useEffect(function () {
+			if (typeof store.startDecisionsPolling === 'function') {
+				store.startDecisionsPolling(POLL_MS)
+				return function () {
+					if (typeof store.stopDecisionsPolling === 'function') store.stopDecisionsPolling()
+				}
+			}
 			if (typeof store.loadDecisions === 'function') void store.loadDecisions()
 			if (typeof setInterval !== 'function') return undefined
 			const handle = setInterval(function () {
@@ -457,10 +469,11 @@ function createDecisionOverlay(deps) {
 		}, [attention, attentionPlays])
 
 		/**
-		 * Answer the foregrounded decision through the SHARED store, then refresh
-		 * the queue immediately: the next decision is shown without waiting for
-		 * the poll. A duplicate (the panel modal answered first) is not an error —
-		 * the refresh is the only thing left to do.
+		 * Answer the foregrounded decision through the SHARED store. The store
+		 * applies the answer's decisionRevision to the decisions domain (dropping
+		 * exactly this request), so the next decision is shown without waiting for
+		 * the poll and without a full queue refresh. A duplicate (the panel modal
+		 * answered first) is not an error: the shared queue is already correct.
 		 */
 		function answer(decision, formAnswer) {
 			if (decision === null || decision === undefined || submitting) return
@@ -472,7 +485,9 @@ function createDecisionOverlay(deps) {
 				const ok = result !== null && result !== undefined && result.ok === true
 				const duplicate = result !== null && result !== undefined && result.duplicate === true
 				if (ok || duplicate) {
-					if (typeof store.loadDecisions === 'function') void store.loadDecisions()
+					// T-235: the answer's decisionRevision already dropped exactly this request
+					// from the shared queue, and that revision is what stops an older list
+					// answer from resurrecting it. No full queue refresh here.
 					return
 				}
 				const failed = result === null || result === undefined ? null : (result.payload === undefined ? null : result.payload)
@@ -512,7 +527,9 @@ function createDecisionOverlay(deps) {
 							key: current.id,
 							decision: current,
 							queueLeft: count - 1,
-							receivedAt: snapshot.receivedAt,
+							// T-235 review: count down from the QUEUE receipt (the same baseline the
+							// panel modal uses), not from the board snapshot's receipt.
+							receivedAt: snapshot.decisionsReceivedAt === undefined || snapshot.decisionsReceivedAt === null ? snapshot.receivedAt : snapshot.decisionsReceivedAt,
 							t: t,
 							busy: submitting || storeBusy,
 							error: error,

@@ -171,18 +171,17 @@ console.log('PASS  T-211 the panel header can tell whether the shell overlay mou
 
 // ── T-208: one decision answer, never two ───────────────────────────────────
 {
-  // Seed a queue the way the panel's /state poll would.
+  // T-235: the panel's /state answer only BOOTSTRAPS the decisions domain, so a
+  // queue that already exists is not reseeded by the board poll. Seed through the
+  // decisions domain itself (what the shared cadence does).
   globalThis.fetch = async () => ({
     json: async () => ({
       ok: true,
-      full: true,
-      project: '/p',
-      tasks: [],
-      counts: {},
       decisions: [{ id: 'DEC-9', status: 'pending' }, { id: 'DEC-10', status: 'pending' }],
+      counts: { pending: 2 },
     }),
   })
-  await store.load()
+  await store.loadDecisions()
   assert.deepEqual(store.getSnapshot().decisions.map((entry) => entry.id), ['DEC-9', 'DEC-10'])
 
   let posts = 0
@@ -852,6 +851,289 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   console.log('PASS  T-233 20 project switches never paint an old board or old metadata')
 }
 
+// ── T-235: decisions are ONE domain with a shared server revision ───────────
+//
+// Before this card the queue had two independent writers (the 2.5 s /state
+// sweep and the overlay's 5 s decisionList), so a slow answer could repaint a
+// queue that was already newer. The decisions domain now owns it:
+//   - the /state snapshot only BOOTSTRAPS it (a routine poll cannot overwrite);
+//   - a list answer lands only when its decisionRevision moved forward;
+//   - an answer's new revision drops exactly that request, so an older list
+//     answer cannot resurrect it;
+//   - a failed poll keeps the last good queue;
+//   - a project switch clears it (the ids are project-scoped).
+{
+  const listCalls = []
+  const stateAnswer = (ids, revision) => ({
+    ok: true,
+    full: true,
+    project: '/repo',
+    projectRoot: '/repo',
+    counts: { total: 0 },
+    tasks: [],
+    decisions: ids.map((id) => ({ id: id, status: 'pending' })),
+    decisionRevision: revision,
+    metadata: { split: true, light: true, deferred: [] },
+  })
+  let statePayload = stateAnswer(['DEC-A'], 5)
+  let listPayload = { ok: true, decisions: [{ id: 'DEC-A', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 5 }
+  // A single-step answer: the shown revision + 1. The SKIPPED-revision case is
+  // its own block below.
+  let answerRevision = 7
+  const routedFetch = async (url, options) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => statePayload }
+    if (text.indexOf('/meta') === 0) {
+      return { json: async () => ({ ok: true, project: '/repo', meta: { agentTree: { available: true, root: { id: 's', name: 'lead' }, members: [], count: 0, error: null } }, errors: {}, metadata: { split: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/action') === 0) {
+      const body = JSON.parse(options.body)
+      if (body.action === 'decisionList') {
+        listCalls.push(body)
+        return { json: async () => listPayload }
+      }
+      if (body.action === 'decisionAnswer') {
+        // A T-231 write envelope names the new queue generation.
+        return { json: async () => ({ ok: true, decision: { id: body.decisionId, status: 'answered' }, applied: null, seq: 1, affected: { ids: [], count: 0 }, changed: ['decisions'], decisionRevision: answerRevision }) }
+      }
+      if (body.action === 'openProject') {
+        // The answer describes the NEW project, so the decisions domain must reset.
+        const switchedSnapshot = Object.assign(stateAnswer(['DEC-B2'], 20), { project: body.path, projectRoot: body.path })
+        return { json: async () => ({ ok: true, seq: 2, changed: ['board'], affected: { ids: [], count: 0 }, snapshot: switchedSnapshot }) }
+      }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  globalThis.fetch = routedFetch
+  const revisionStore = createTaskStore((key) => key, deps)
+
+  // 1) The /state answer BOOTSTRAPS the queue and records its revision.
+  await revisionStore.load()
+  assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-A'])
+  assert.equal(revisionStore.getSnapshot().decisionRevision, 5, 'the queue names the server revision it describes')
+  assert.equal(revisionStore.domains.decisions.state().status, 'ready')
+  // The panel modal and the shell overlay both read this ONE compatible snapshot,
+  // so the two surfaces can never show different queues.
+  assert.deepEqual(revisionStore.domains.decisions.state().decisions, revisionStore.getSnapshot().decisions, 'the snapshot projects the SAME queue the domain owns')
+  assert.equal(revisionStore.domains.decisions.state().revision, revisionStore.getSnapshot().decisionRevision, 'and the same revision')
+
+  // 2) The panel and the shell overlay register on ONE cadence: two surfaces,
+  //    ONE timer, ONE decisionList — and the last one leaving stops it.
+  const timers = []
+  const cleared = []
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  globalThis.setInterval = (fn, ms) => {
+    timers.push({ fn: fn, ms: ms })
+    return { timer: timers.length }
+  }
+  globalThis.clearInterval = (handle) => { cleared.push(handle) }
+  try {
+    revisionStore.startDecisionsPolling()
+    revisionStore.startDecisionsPolling()
+    await tick()
+    assert.equal(listCalls.length, 1, 'the panel and the shell overlay share ONE decisionList on mount')
+    assert.equal(timers.length, 1, 'two surfaces share ONE cadence timer')
+    assert.equal(timers[0].ms, revisionStore.DECISION_POLL_MS, 'the shared cadence is the T-235 one')
+    assert.equal(revisionStore.DECISION_POLL_MS, 5000)
+    revisionStore.stopDecisionsPolling()
+    assert.equal(cleared.length, 0, 'one surface leaving keeps the cadence for the other')
+    revisionStore.stopDecisionsPolling()
+    assert.equal(cleared.length, 1, 'the LAST surface leaving stops the cadence')
+  } finally {
+    globalThis.setInterval = realSetInterval
+    globalThis.clearInterval = realClearInterval
+  }
+
+  // 3) A routine /state answer NEVER overwrites the domain — not even one that
+  //    claims a newer revision. Only the first answer bootstraps the queue.
+  statePayload = stateAnswer(['DEC-OLD'], 9)
+  await revisionStore.load()
+  assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-A'], 'a routine /state answer cannot repaint the queue')
+  assert.equal(revisionStore.getSnapshot().decisionRevision, 5, 'and it cannot move the revision either')
+
+  // 4) A NEWER decisionList revision lands.
+  listPayload = { ok: true, decisions: [{ id: 'DEC-B', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 6 }
+  const newer = await revisionStore.loadDecisions()
+  assert.equal(newer.ok, true)
+  assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-B'])
+  assert.equal(revisionStore.getSnapshot().decisionRevision, 6)
+
+  // 5) An OLDER (or equal) revision is discarded instead of overwriting it.
+  listPayload = { ok: true, decisions: [{ id: 'DEC-A', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 5 }
+  const stale = await revisionStore.loadDecisions()
+  assert.equal(stale.ok, false)
+  assert.equal(stale.stale, true, 'an older revision never overwrites a newer queue')
+  assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-B'])
+  listPayload = { ok: true, decisions: [{ id: 'DEC-A', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 6 }
+  await revisionStore.loadDecisions()
+  assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-B'], 'an equal revision describes the queue already on screen')
+
+  // 6) An answer applies its NEW revision and drops exactly that request; it
+  //    does NOT re-read the whole queue.
+  const listsBefore = listCalls.length
+  const answered = await revisionStore.send('decisionAnswer', { decisionId: 'DEC-B', option: 'go' })
+  assert.equal(answered.ok, true)
+  assert.deepEqual(revisionStore.getSnapshot().decisions, [], 'the answered request left the shared queue')
+  assert.equal(revisionStore.getSnapshot().decisionRevision, 7, 'the single-step answer carries the new revision')
+  assert.equal(listCalls.length, listsBefore, 'the answer invalidates by revision instead of refreshing the whole queue')
+
+  // 7) A list answer that STARTED before the answer carries the older revision
+  //    and must not resurrect the answered request.
+  listPayload = { ok: true, decisions: [{ id: 'DEC-B', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 7 }
+  const resurrect = await revisionStore.loadDecisions()
+  assert.equal(resurrect.stale, true)
+  assert.deepEqual(revisionStore.getSnapshot().decisions, [])
+
+  // 8) A failed list keeps the last good queue and reports it degraded.
+  listPayload = { ok: true, decisions: [{ id: 'DEC-C', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 9 }
+  await revisionStore.loadDecisions()
+  globalThis.fetch = async () => {
+    throw new Error('connect ECONNREFUSED')
+  }
+  const failed = await revisionStore.loadDecisions()
+  assert.equal(failed.ok, false)
+  assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-C'], 'a failed poll never blanks the queue')
+  assert.equal(revisionStore.domains.decisions.state().status, 'degraded')
+  assert.equal(revisionStore.domains.decisions.state().lastGood.length, 1, 'the domain keeps its last good queue')
+  globalThis.fetch = routedFetch
+
+  // 9) A project switch clears the old project's queue: the NEW snapshot seeds
+  //    the domain with its own revision instead of the old ids surviving.
+  const switched = await revisionStore.switchProject('/repo-b')
+  assert.equal(switched.ok, true)
+  await tick()
+  assert.deepEqual(revisionStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-B2'], 'the new project seeds its own queue')
+  assert.equal(revisionStore.getSnapshot().decisionRevision, 20, 'the new project revision replaces the old one')
+  console.log('PASS  T-235 one shared decisions domain keeps the newest revision and drops stale answers')
+}
+
+
+// ── T-235 review round 2: an answer that SKIPS a revision ───────────────────
+//
+// Another writer can create a decision between two polls, so an answer can land
+// on a revision more than one past the queue on screen (rev 5 [D1] -> answer at
+// rev 7, because rev 6 created D2). The local queue cannot claim revision 7 —
+// the list answer at 7 would be dropped as 'equal' and D2 would stay invisible
+// until an unrelated write moved the revision — so the domain keeps its old
+// revision, drops in-flight pre-answer answers and refetches the real queue.
+{
+  const listCalls = []
+  let answerRevision = 7
+  let listPayload = { ok: true, decisions: [{ id: 'DEC-D1', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 5 }
+  globalThis.fetch = async (url, options) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/meta') === 0) return { json: async () => ({ ok: true, meta: {}, errors: {}, metadata: { split: true, deferred: [] } }) }
+    if (text.indexOf('/action') === 0) {
+      const body = JSON.parse(options.body)
+      if (body.action === 'decisionList') {
+        listCalls.push(listPayload.decisionRevision)
+        return { json: async () => listPayload }
+      }
+      if (body.action === 'decisionAnswer') {
+        return { json: async () => ({ ok: true, decision: { id: body.decisionId, status: 'answered' }, applied: null, seq: 1, affected: { ids: [], count: 0 }, changed: ['decisions'], decisionRevision: answerRevision }) }
+      }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const skipStore = createTaskStore((key) => key, deps)
+  await skipStore.loadDecisions()
+  assert.deepEqual(skipStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-D1'])
+  assert.equal(skipStore.getSnapshot().decisionRevision, 5)
+
+  // The answer lands on revision 7: revision 6 was an UNSEEN write (D2 exists).
+  const requestsBefore = listCalls.length
+  listPayload = { ok: true, decisions: [{ id: 'DEC-D2', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 7 }
+  const answered = await skipStore.send('decisionAnswer', { decisionId: 'DEC-D1', option: 'go' })
+  assert.equal(answered.ok, true)
+  await tick()
+  const afterSkip = skipStore.getSnapshot()
+  assert.ok(listCalls.length > requestsBefore, 'a skipped revision is refetched instead of being claimed: ' + JSON.stringify(listCalls))
+  assert.deepEqual(afterSkip.decisions.map((entry) => entry.id), ['DEC-D2'], 'the decision the skipped write created becomes visible')
+  assert.equal(afterSkip.decisionRevision, 7, 'the consistent queue carries the answer revision')
+
+  // An older pre-answer list answer still cannot resurrect the answered request.
+  listPayload = { ok: true, decisions: [{ id: 'DEC-D1', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 5 }
+  const stale = await skipStore.loadDecisions()
+  assert.equal(stale.stale, true, 'a pre-answer revision is dropped')
+  assert.deepEqual(skipStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-D2'], 'the answered request never comes back')
+  console.log('PASS  T-235 review round 2 a skipped answer revision refetches instead of hiding a new decision')
+}
+// ── T-235 review: the countdown baseline is the QUEUE receipt ───────────────
+//
+// /state still bumps the board receipt (agent-sidebar uses it as the snapshot
+// generation) but no longer refreshes `decisions`. The modal must therefore count
+// down from the receipt of the QUEUE answer that produced remainingMs, not from
+// the latest board answer, or the shown seconds freeze and then jump back.
+{
+  let now = 1000000
+  const timedDeps = Object.assign({}, deps, { tcNow: () => now })
+  globalThis.fetch = async (url, options) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/meta') === 0) {
+      return { json: async () => ({ ok: true, project: '/repo', meta: { agentTree: { available: true, root: { id: 's', name: 'lead' }, members: [], count: 0, error: null } }, errors: {}, metadata: { split: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/action') === 0) {
+      const body = JSON.parse(options.body)
+      assert.equal(body.action, 'decisionList')
+      return {
+        json: async () => ({
+          ok: true,
+          decisions: [{ id: 'DEC-CLOCK', status: 'pending', remainingMs: 60000, timeoutAt: new Date(now + 60000).toISOString(), autoRunAllowed: true, defaultOption: 'go', options: [{ id: 'go', label: 'go', default: true }] }],
+          counts: { pending: 1 },
+          decisionRevision: 3,
+        }),
+      }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const { createDecisionModal } = require('../../client/src/views/decision-modal.cjs')
+  const modalModule = createDecisionModal({
+    React: { useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}], useEffect: () => {}, useRef: () => ({ current: null }) },
+    h: (type, props) => ({ type: type, props: props }),
+  })
+  const clockStore = createTaskStore((key) => key, timedDeps)
+  await clockStore.loadDecisions()
+  const landed = clockStore.getSnapshot()
+  assert.equal(landed.decisions[0].remainingMs, 60000)
+  assert.equal(landed.decisionsReceivedAt, 1000000, 'the queue records the receipt of ITS answer')
+
+  // Good /state polls move the BOARD receipt (the sidebar generation), never the
+  // queue baseline: they did not re-measure remainingMs.
+  now = 1002500
+  await clockStore.load()
+  assert.equal(clockStore.getSnapshot().source, 'host')
+  assert.equal(clockStore.getSnapshot().receivedAt, 1002500, 'the board receipt still moves')
+  assert.equal(clockStore.getSnapshot().decisionsReceivedAt, 1000000, 'a board answer does not re-measure the queue')
+  now = 1005000
+  await clockStore.load()
+  assert.equal(clockStore.getSnapshot().decisionsReceivedAt, 1000000)
+  // The routine 2.5 s cadence keeps answering /state all the way to +30 s.
+  for (let later = now + 2500; later <= 1030000; later += 2500) {
+    now = later
+    await clockStore.load()
+  }
+
+  // At +30 s the REAL formula (decision-modal.cjs) reads ~30 s, not 60 s.
+  now = 1030000
+  const at30 = clockStore.getSnapshot()
+  assert.equal(at30.receivedAt, 1030000, 'the board receipt tracks the latest /state answer')
+  const shown = modalModule.decisionRemainingSeconds(at30.decisions[0], at30.decisionsReceivedAt, now)
+  assert.equal(shown, 30, 'at +30 s the countdown reads ~30 s, not 60 s')
+  const frozen = modalModule.decisionRemainingSeconds(at30.decisions[0], at30.receivedAt, now)
+  assert.ok(frozen >= 59, 'the board-receipt baseline is what froze the countdown (' + frozen + ' s)')
+  // Both surfaces are handed this one baseline: the snapshot projects the domain
+  // receipt, and task-center.cjs / decision-overlay.cjs pass it to their card.
+  assert.equal(clockStore.domains.decisions.state().receivedAt, at30.decisionsReceivedAt, 'the snapshot projects the domain receipt')
+  console.log('PASS  T-235 review the countdown baseline is the queue receipt, not the board poll')
+}
+
 const poll = globalThis.setInterval
 let polls = 0
 globalThis.setInterval = (fn, ms) => {
@@ -860,7 +1142,9 @@ globalThis.setInterval = (fn, ms) => {
 }
 store.startPolling(1000)
 store.stopPolling()
-assert.equal(polls, 1)
+// T-235: the panel's board poll also registers it on the ONE shared decision
+// cadence, so two intervals is the intended minimum (board + decisions).
+assert.equal(polls, 2)
 globalThis.setInterval = poll
 
 console.log('PASS  the Host-backed store is an independently testable module')

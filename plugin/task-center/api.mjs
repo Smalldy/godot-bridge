@@ -4177,11 +4177,16 @@ export function createApi(ctx, options) {
     // deadline actually passed, so a 2.5s poll does not churn the file.
     let pendingDecisions = []
     let decisionsError = null
+    // T-235: the sweep/queue generation. The client treats this snapshot's
+    // `decisions` as a BOOTSTRAP (and drops an answer whose revision is older
+    // than the queue it already shows); decisionList answers the same number.
+    let decisionRevision = null
     const decisionsStarted = Date.now()
     try {
       const swept = await decisionStore.sweep(projectPath)
       if (swept.ok === true) {
         pendingDecisions = swept.pending.map(withDecisionPolicy)
+        decisionRevision = Number.isFinite(swept.revision) ? swept.revision : null
         // T-196: a deadline that passed applies the SAFE default (create/reopen);
         // protected danger defaults were expired unresolved by the store and are
         // never executed here.
@@ -4304,7 +4309,12 @@ export function createApi(ctx, options) {
       mergeQueue: timer === null ? mergerQueueStatus() : await timer.measure('mergeQueue', () => mergerQueueStatus()),
       // T-195: pending host decisions (one-shot, server deadline). Resolved
       // history is served by decisionList, not by the polling snapshot.
+      // T-235: `decisions` + `decisionRevision` are the BOOTSTRAP pair. The client
+      // seeds its decisions domain from the first answer and then keeps the queue
+      // fresh through decisionList (same revision numbering), so an older /state
+      // answer can never repaint a newer queue.
       decisions: pendingDecisions,
+      decisionRevision: decisionRevision,
       decisionsError: decisionsError,
       // T-198: the resolved decision policy (global default + project override)
       // the settings page edits. Deferred from the core first paint like roles.
