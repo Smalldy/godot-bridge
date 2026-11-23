@@ -95,7 +95,9 @@ function stableStringify(value) {
 }
 
 export function emptyDecisionStore(now) {
-  return { version: DECISION_VERSION, requests: [], updatedAt: iso(typeof now === 'number' ? now : Date.now()) }
+  // T-235: every committed write bumps `revision`, the queue's shared generation
+  // between the two decision surfaces and the /state snapshot. 0 = no write yet.
+  return { version: DECISION_VERSION, revision: 0, requests: [], updatedAt: iso(typeof now === 'number' ? now : Date.now()) }
 }
 
 /** Coerce a stored record; undefined when it cannot be trusted at all. */
@@ -178,6 +180,9 @@ export function normaliseDecisionStore(parsed, now) {
     ok: true,
     store: {
       version: DECISION_VERSION,
+      // T-235: the durable queue revision. A pre-T-235 file has none and reads as
+      // 0, so the first write after an upgrade starts at 1.
+      revision: Number.isFinite(parsed.revision) && parsed.revision >= 0 ? Math.floor(parsed.revision) : 0,
       requests: pruneRequests(requests),
       updatedAt: isIso(parsed.updatedAt) ? parsed.updatedAt : iso(typeof now === 'number' ? now : Date.now()),
     },
@@ -270,13 +275,32 @@ async function updateDecisionStore(io, options, mutate) {
       if (current.ok !== true) return current
       const next = mutate(current.store, attempts)
       if (next === undefined || next === null) return failure('aborted', 'the mutator declined the change')
-      const payload = { version: DECISION_VERSION, requests: pruneRequests(next.requests), updatedAt: iso(options.now) }
+      // T-235: a commit is a new queue generation. The CAS above serialises the
+      // writes, so the revision is monotonic per project and survives restarts.
+      const revision = (Number.isFinite(next.revision) && next.revision >= 0 ? Math.floor(next.revision) : 0) + 1
+      const payload = { version: DECISION_VERSION, revision: revision, requests: pruneRequests(next.requests), updatedAt: iso(options.now) }
       await ensureDirFor(io, options.projectPath, options)
       const written = await writeStore(io, options, payload, current.existed === true ? current.version : null)
       if (written.ok === true) return { ok: true, store: payload, version: written.version, attempts: attempts }
       if (written.code !== 'stale' || attempts >= limit) return Object.assign({}, written, { attempts: attempts })
     }
   })
+}
+
+/**
+ * T-235: a successful write answers the NEW queue revision.
+ *
+ * request/answer/cancel all commit through updateDecisionStore, whose
+ * `written.store` is the file that just landed, so this is the exact generation
+ * the write produced: a browser can drop that one request and refuse an older
+ * decisionList answer instead of refreshing the whole queue.
+ */
+function answeredWithRevision(outcome, written) {
+  if (outcome === null || outcome === undefined) return written
+  if (outcome.ok === true && written !== null && written !== undefined && written.ok === true) {
+    return Object.assign({}, outcome, { decisionRevision: written.store.revision })
+  }
+  return outcome
 }
 
 /** One request's panel-facing shape. remainingMs comes from the SERVER clock
@@ -623,7 +647,7 @@ export function createDecisionStore(io, options) {
       if (drafted.record.fingerprint !== existing.fingerprint) {
         return failure('decision-conflict', 'decision ' + id + ' already exists with different content')
       }
-      return { ok: true, decision: decisionView(existing, now), created: false, duplicate: true }
+      return { ok: true, decision: decisionView(existing, now), created: false, duplicate: true, decisionRevision: read.store.revision }
     }
     if (read.store.requests.filter((record) => record.status === DECISION_PENDING).length >= MAX_DECISIONS) {
       return failure('decision-capacity', 'there are already ' + String(MAX_DECISIONS) + ' pending decisions; resolve some first')
@@ -648,8 +672,7 @@ export function createDecisionStore(io, options) {
       outcome = { ok: true, decision: decisionView(drafted.record, now), created: true, duplicate: false }
       return store
     })
-    if (outcome !== null) return outcome
-    return written
+    return answeredWithRevision(outcome, written)
   }
 
   /** Resolve one pending request. Exactly one answer ever lands. */
@@ -718,8 +741,7 @@ export function createDecisionStore(io, options) {
       outcome = { ok: true, decision: decisionView(record, now) }
       return store
     })
-    if (outcome !== null) return outcome
-    return written
+    return answeredWithRevision(outcome, written)
   }
 
   /** Cancel a pending request from the host/lifecycle side (never an answer). */
@@ -750,8 +772,7 @@ export function createDecisionStore(io, options) {
       outcome = { ok: true, decision: decisionView(record, now) }
       return store
     })
-    if (outcome !== null) return outcome
-    return written
+    return answeredWithRevision(outcome, written)
   }
 
   /**
@@ -769,7 +790,7 @@ export function createDecisionStore(io, options) {
         .filter((record) => record.status === DECISION_PENDING)
         .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)))
         .map((record) => decisionView(record, now))
-      return { ok: true, pending: pending, expired: [], wrote: false }
+      return { ok: true, pending: pending, expired: [], wrote: false, revision: read.store.revision }
     }
     const at = iso(now)
     let expired = []
@@ -787,14 +808,14 @@ export function createDecisionStore(io, options) {
       .filter((record) => record.status === DECISION_PENDING)
       .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)))
       .map((record) => decisionView(record, now))
-    return { ok: true, pending: pending, expired: expired.map((record) => decisionView(record, now)), wrote: true }
+    return { ok: true, pending: pending, expired: expired.map((record) => decisionView(record, now)), wrote: true, revision: written.store.revision }
   }
 
   /** Read-only pending queue (no sweep) for callers that already swept. */
   async function pending(projectPath, extra) {
     const result = await pendingViews(io, base(projectPath, extra))
     if (result.ok !== true) return result
-    return { ok: true, pending: result.pending }
+    return { ok: true, pending: result.pending, revision: result.store.revision }
   }
 
   /** Paged list for decisionList: pending first (queue order), then resolved. */
@@ -818,7 +839,9 @@ export function createDecisionStore(io, options) {
       })
       .slice(0, limit)
       .map((record) => decisionView(record, now))
-    return { ok: true, decisions: selected, counts: counts }
+    // T-235: the queue names the revision it describes, so a client can drop an
+    // older answer instead of repainting the modal with a superseded queue.
+    return { ok: true, decisions: selected, counts: counts, revision: read.store.revision }
   }
 
 

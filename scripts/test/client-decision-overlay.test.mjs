@@ -207,7 +207,9 @@ console.log('PASS  the chip toggles the docked card')
   confirm.props.onClick()
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.deepEqual(sends, [{ action: 'decisionAnswer', body: { decisionId: 'DEC-1', option: 'create' } }], 'the answer goes through the shared store, exactly once')
-  assert.equal(loads, 1, 'a successful answer refreshes the queue immediately')
+  // T-235: the answer's decisionRevision invalidates EXACTLY that request in the
+  // shared decisions domain; the overlay no longer re-reads the whole queue.
+  assert.equal(loads, 0, 'a successful answer does not re-read the whole queue')
   // The Host drops the answered request; the next render foregrounds DEC-2.
   currentSnapshot = snapshotOf([decision({ id: 'DEC-2', taskId: 'T-2', title: '创建任务 T-2？' })])
   const next = Overlay({})
@@ -237,7 +239,7 @@ console.log('PASS  answering advances the queue to the next decision')
   const cardNode = card.type(card.props)
   find(cardNode, (node) => node.props && node.props['data-decision-confirm-submit'] === 'true').props.onClick()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(loads, 1, 'the duplicate still refreshes the queue instead of raising a banner')
+  assert.equal(loads, 0, 'the duplicate is absorbed by the shared queue instead of refreshing it')
 }
 console.log('PASS  a duplicate submission is absorbed by the shared store')
 
@@ -315,6 +317,30 @@ console.log('PASS  the entry is lifted above a docked composer and keeps the her
   assert.ok(bundle.includes('store.loadDecisions'), 'the shipped bundle polls the decision list')
 }
 console.log('PASS  40-tail + the shipped bundle register the shell.overlay decision entry')
+
+// ── T-235: the overlay shares ONE decisions domain + cadence with the panel ──
+//
+// The panel modal and this overlay must never keep two decisionList polls. Both
+// register on the store's ref-counted cadence, and a successful answer applies
+// the answer's decisionRevision instead of re-reading the whole queue.
+{
+  const OVERLAY = readFileSync(new URL('../../client/src/views/decision-overlay.cjs', import.meta.url), 'utf8')
+  const bundle = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
+  assert.ok(OVERLAY.includes('store.startDecisionsPolling'), 'the overlay registers on the SHARED decision cadence')
+  assert.ok(OVERLAY.includes('store.stopDecisionsPolling'), 'leaving the page releases its registration')
+  assert.ok(OVERLAY.includes('store.loadDecisions'), 'a store without the cadence API still polls (legacy fallback)')
+  const answerStart = OVERLAY.indexOf('if (ok || duplicate)')
+  const answerEnd = OVERLAY.indexOf('const failed = result === null')
+  assert.ok(answerStart > 0 && answerEnd > answerStart, 'the answer handler is where the test expects it')
+  assert.equal(
+    OVERLAY.slice(answerStart, answerEnd).includes('loadDecisions'),
+    false,
+    'a successful answer applies the revision instead of refreshing the whole queue',
+  )
+  assert.ok(bundle.includes('startDecisionsPolling'), 'the shipped bundle carries the shared cadence')
+  assert.ok(bundle.includes('decisionRevision'), 'the shipped bundle carries the revision guard')
+}
+console.log('PASS  T-235 the overlay shares the decisions domain and cadence with the panel')
 
 // ── T-211: empty -> pending -> answered -> a LATER pending stays visible ───
 {

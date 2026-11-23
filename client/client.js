@@ -3827,6 +3827,156 @@ const createTaskStore = (function () {
 			}
 		}
 
+		/**
+		 * T-235: the DECISIONS domain — the ONE owner of the pending queue.
+		 *
+		 * Before this domain the queue had two independent writers: the 2.5 s /state
+		 * poll and the shell overlay's own 5 s decisionList poll both assigned the same
+		 * local array. Nothing ordered the two answers, so a slow /state that started
+		 * before an answer could repaint a queue that was already newer, and the panel
+		 * modal and the overlay each kept a request going.
+		 *
+		 *   begin/current   every list request owns a generation; a superseded answer
+		 *                   (a project switch, a reset) never lands;
+		 *   succeed         a list answer lands only when its server decisionRevision is
+		 *                   NEWER than the shown one (equal is dropped: same queue);
+		 *   seed            the ONE-WAY bootstrap. A /state (or action) snapshot fills an
+		 *                   EMPTY domain; after the first queue the decisions cadence
+		 *                   owns it and the board poll stops being a queue writer;
+		 *   answered        an answer's new revision drops exactly that request, so an
+		 *                   older list answer cannot resurrect it;
+		 *   fail            a failed refresh keeps the last good queue (degraded).
+		 *
+		 * A Host that sends no decisionRevision keeps the pre-T-235 behaviour (newest
+		 * answer wins): there is no ordering to compare, and the queue is still shared.
+		 */
+		function tcCreateDecisionCache(options) {
+			const o = options === undefined || options === null ? {} : options
+			const now = typeof o.now === 'function' ? o.now : function () { return Date.now() }
+			const state = {
+				name: typeof o.name === 'string' && o.name !== '' ? o.name : 'decisions',
+				// The pending queue on screen (null = nothing answered yet).
+				decisions: null,
+				// The server decisionRevision this queue describes (null = the Host does not
+				// advertise one; the queue then falls back to last-answer-wins).
+				revision: null,
+				// idle | loading | ready | degraded
+				status: 'idle',
+				error: null,
+				receivedAt: 0,
+				generation: 0,
+				lastGood: null,
+				// The pinned project this queue describes (null = not scoped yet).
+				scope: null,
+			}
+			function begin(scope) {
+				state.generation += 1
+				state.scope = scope === undefined ? null : scope
+				// With a queue on screen the ANSWER owns the status: a recorded 'degraded'
+				// stays visible until a good answer replaces it with 'ready'.
+				if (state.decisions === null) state.status = 'loading'
+				state.error = null
+				return { generation: state.generation, scope: state.scope }
+			}
+			function current(token) {
+				return token !== null && token !== undefined && token.generation === state.generation
+			}
+			/** Is this answer NEWER than the queue already on screen? */
+			function accepts(revision) {
+				if (state.decisions === null) return true
+				const next = Number.isFinite(revision) ? revision : null
+				// A Host without revisions has no ordering: the last answer wins.
+				if (next === null) return state.revision === null
+				if (state.revision === null) return true
+				// Equal is dropped too: it describes the very queue already on screen.
+				return next > state.revision
+			}
+			function keep(status, error) {
+				if (state.decisions !== null) state.lastGood = state.decisions
+				state.status = status
+				state.error = error === undefined ? null : error
+			}
+			/** A list answer landed (generation-checked, revision-checked). */
+			function succeed(token, decisions, revision) {
+				if (!current(token)) return false
+				if (!accepts(revision)) return false
+				state.decisions = decisions
+				if (Number.isFinite(revision)) state.revision = revision
+				state.receivedAt = now()
+				keep('ready', null)
+				return true
+			}
+			/**
+			 * Bootstrap ONLY: a /state (or action) snapshot fills an EMPTY domain. Once a
+			 * queue exists the decisions cadence owns it, so a routine board poll can never
+			 * overwrite a newer list answer.
+			 */
+			function seed(decisions, revision) {
+				if (state.decisions !== null) return false
+				state.decisions = Array.isArray(decisions) ? decisions : []
+				if (Number.isFinite(revision)) state.revision = revision
+				state.receivedAt = now()
+				keep('ready', null)
+				return true
+			}
+			function fail(token, error, status) {
+				if (!current(token)) return false
+				// The last good queue is kept: a blipped poll must not empty the modal.
+				keep(typeof status === 'string' && status !== '' ? status : 'degraded', error)
+				return true
+			}
+			/**
+			 * One answered request. The answer's revision is the EXACT invalidation: the
+			 * request leaves the queue now, and any list answer that started before the
+			 * answer carries the older revision and is dropped instead of resurrecting it.
+			 */
+			function answered(decisionId, revision) {
+				if (typeof decisionId === 'string' && decisionId !== '' && state.decisions !== null) {
+					state.decisions = state.decisions.filter(function (entry) {
+						return entry === null || entry === undefined || entry.id !== decisionId
+					})
+				}
+				if (Number.isFinite(revision) && (state.revision === null || revision > state.revision)) state.revision = revision
+				if (state.decisions !== null) {
+					state.receivedAt = now()
+					keep('ready', null)
+				}
+				return true
+			}
+			function reset(scope) {
+				state.generation += 1
+				state.decisions = null
+				state.revision = null
+				state.status = 'idle'
+				state.receivedAt = 0
+				state.error = null
+				state.lastGood = null
+				state.scope = scope === undefined ? null : scope
+			}
+			function view() {
+				return {
+					decisions: state.decisions === null ? [] : state.decisions,
+					revision: state.revision,
+					status: state.status,
+					error: state.error,
+					receivedAt: state.receivedAt === 0 ? null : state.receivedAt,
+					scope: state.scope,
+				}
+			}
+			return {
+				state: function () { return state },
+				begin: begin,
+				current: current,
+				accepts: accepts,
+				succeed: succeed,
+				seed: seed,
+				fail: fail,
+				answered: answered,
+				reset: reset,
+				view: view,
+			}
+		}
+
 		function createTaskStore(t, deps) {
 			const {
 				TC_STATE_URL,
@@ -3864,13 +4014,15 @@ const createTaskStore = (function () {
 				tasks: [],
 				counts: {},
 			}, 'loading', '')
-			// T-195: the host's pending decisions and the local arrival time of the
-			// snapshot they came with. The modal counts down from the SERVER's
-			// remainingMs, corrected by this receipt time.
-			let decisions = []
+			// T-235: the pending queue has ONE owner — the decisions domain. The
+			// snapshot's decisions / decisionRevision / decisionsStatus are projections
+			// of it, and a /state answer only BOOTSTRAPS it (see seedDecisions).
+			const decisionDomain = tcCreateDecisionCache({ name: 'decisions', now: clock })
 			// T-198: the resolved decision policy (settings page). Carried exactly
 			// like the decision queue: server-owned, never derived in the browser.
 			let decisionPolicy = null
+			// The local arrival time of the last accepted snapshot: the decision
+			// countdown corrects the SERVER's remainingMs with this receipt time.
 			let receivedAt = clock()
 			// T-111: the Host answers the activity timeline incrementally. Keep what we
 			// already have and ask only for events after the last one we saw.
@@ -3923,6 +4075,12 @@ const createTaskStore = (function () {
 			// the next tick starts a fresh request.
 			const DECISION_LOAD_TIMEOUT_MS = 15000
 			const DECISION_LOAD_TIMEOUT = { timedOut: true }
+			// T-235: ONE decision-queue cadence for the whole plugin. The panel and the
+			// shell overlay both register on it (ref-counted), so two mounted surfaces
+			// still issue one decisionList per tick instead of each polling on its own.
+			const DECISION_POLL_MS = 5000
+			let decisionTimer = null
+			let decisionRefs = 0
 			// T-182: "no project is bound to this session" is the EXPECTED answer
 			// before the first project is opened. It is a SETUP state, not a failure:
 			// routing it into the error banner put "操作失败" over a panel that was
@@ -3993,17 +4151,24 @@ const createTaskStore = (function () {
 				}
 			}
 
-			/**
-			 * T-195: carry the pending decision queue (and the policy) from a payload.
-			 * The server sends each request's remainingMs, so the countdown is
-			 * measured from the server deadline; receivedAt turns it into a local
-			 * elapsed time.
-			 */
-			function absorbDecisions(payload, host) {
-				const source = host === undefined ? payload : host
-				if (source !== null && source !== undefined && Array.isArray(source.decisions)) decisions = source.decisions
+			/** The resolved decision POLICY a snapshot carries (deferred /meta owns it otherwise). */
+			function absorbDecisionPolicy(source) {
 				if (source !== null && source !== undefined && source.decisionPolicy !== undefined && source.decisionPolicy !== null) decisionPolicy = source.decisionPolicy
-				receivedAt = clock()
+			}
+
+			/**
+			 * T-235: a /state (or action) snapshot may BOOTSTRAP the decisions domain —
+			 * never overwrite it.
+			 *
+			 * The routine 2.5 s board poll used to write the queue directly, which is
+			 * exactly how an older /state answer could repaint a newer decisionList
+			 * answer. After the first queue the decisions cadence owns it; the revision the
+			 * snapshot carries is recorded so the next compare is a real one.
+			 */
+			function seedDecisions(source) {
+				if (source === null || source === undefined || !Array.isArray(source.decisions)) return false
+				const revision = Number.isFinite(source.decisionRevision) ? source.decisionRevision : null
+				return decisionDomain.seed(source.decisions, revision) === true
 			}
 
 			/**
@@ -4054,7 +4219,12 @@ const createTaskStore = (function () {
 				next.actionResult = actionResult
 				next.actionError = actionError
 				next.receivedAt = receivedAt
-				next.decisions = decisions
+				// T-235: the queue, the revision it describes and the domain's own status.
+				// BOTH decision surfaces read exactly these three fields.
+				const decisionView = decisionDomain.view()
+				next.decisions = decisionView.decisions
+				next.decisionRevision = decisionView.revision
+				next.decisionsStatus = decisionView.status
 				next.decisionPolicy = decisionPolicy
 				next.details = detailDomain.compose(next.tasks)
 				const project = projectKeyOf(next.project)
@@ -4305,8 +4475,10 @@ const createTaskStore = (function () {
 							// project: it is "this session resolves to nothing", so the panel
 							// never shows a last-active project as if the session owned it.
 							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [], resolvedFrom: 'unbound', sessionProject: null }), 'setup', '')
-							absorbDecisions(payload)
-							decisions = []
+							absorbDecisionPolicy(payload)
+							// T-235: no project means no queue at all (nothing of the old one survives).
+							decisionDomain.reset(null)
+							receivedAt = clock()
 							decisionPolicy = null
 							message = ''
 							messageKind = null
@@ -4329,19 +4501,24 @@ const createTaskStore = (function () {
 							// with (a delta answer must not inherit the error source forever).
 							next.source = 'host'
 							const nextProject = projectKeyOf(next.project)
-							absorbDecisions(payload)
-							// T-111/T-210/T-233: a project switch starts a new activity log and
-							// invalidates EVERY other domain (metadata and details describe the
-							// OLD project now).
+							receivedAt = clock()
+							// T-111/T-210/T-233/T-235: a project switch starts a new activity log and
+							// invalidates EVERY other domain (metadata, details and the decisions queue
+							// all describe the OLD project now).
 							if (nextProject !== previousProject) {
 								activityLog = []
 								activityCursor = null
 								resetMetaDomain(next.project)
 								clearDetails()
+								decisionDomain.reset(nextProject)
 								// T-208: decision ids are project-scoped; an id answered in project A
 								// must not block the same id in project B.
 								answeredDecisions.clear()
 							}
+							absorbDecisionPolicy(payload)
+							// Bootstrap only: a project switch cleared the domain, so the NEW board's
+							// queue seeds it; a routine poll cannot overwrite a newer list answer.
+							seedDecisions(payload)
 							// An OLDER Host answers /state with the activity timeline itself; a
 							// split Host sends it from /meta (absorbed in loadMeta).
 							if (payload.activityEvents !== undefined && payload.activityEvents !== null) absorbActivity(payload.activityEvents)
@@ -4473,7 +4650,8 @@ const createTaskStore = (function () {
 							const next = tcSnapshot(host, 'host', '', payload)
 							const nextProject = projectKeyOf(next.project)
 							const boardToken = boardDomain.begin(nextProject === null ? '__session__' : nextProject)
-							absorbDecisions(host)
+							// T-235: a snapshot action (openProject) answer is a fresh receipt.
+							receivedAt = clock()
 							boardFailed = false
 							if (quiet) {
 								// An automatic call never touches the user's banner or channel.
@@ -4489,7 +4667,12 @@ const createTaskStore = (function () {
 								actionResult = payload
 								actionError = null
 							}
-							if (decisionId !== null) answeredDecisions.add(decisionId)
+							if (decisionId !== null) {
+								answeredDecisions.add(decisionId)
+								// T-235: the answer's revision drops exactly that request from the shared
+								// queue (the snapshot above is already post-answer on a T-231 host).
+								decisionDomain.answered(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
+							}
 							// An action's answer (or openProject's full snapshot) also advertises
 							// the split; learn it here so a panel that bound a project before its
 							// first poll still asks for the deferred half.
@@ -4501,8 +4684,13 @@ const createTaskStore = (function () {
 								activityCursor = null
 								resetMetaDomain(next.project)
 								clearDetails()
+								// T-235: decision ids are project-scoped, so the queue is dropped too.
+								decisionDomain.reset(nextProject)
 								answeredDecisions.clear()
 							}
+							absorbDecisionPolicy(host)
+							// The switch cleared the domain: the NEW project's snapshot seeds its queue.
+							seedDecisions(host)
 							boardDomain.succeed(boardToken, next)
 							emit()
 							// switchProject() asks for the new project's metadata itself, right
@@ -4529,9 +4717,11 @@ const createTaskStore = (function () {
 							}
 							if (decisionId !== null) {
 								answeredDecisions.add(decisionId)
-								// Drop the answered request from the queue right away so BOTH
-								// surfaces advance without waiting for the next poll.
-								decisions = decisions.filter(function (entry) { return entry === null || entry === undefined || entry.id !== decisionId })
+								// T-235: the answer's revision drops EXACTLY this request from the shared
+								// queue, so both surfaces advance at once. No full queue refresh follows:
+								// a list answer that started before the answer carries the older revision
+								// and loses the compare instead of resurrecting the request.
+								decisionDomain.answered(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
 								receivedAt = clock()
 							}
 							emit()
@@ -4561,10 +4751,10 @@ const createTaskStore = (function () {
 								}
 							}
 						} else if (decisionId !== null) {
-							// T-208: an older host's answer carries no snapshot and no changed
-							// list. Drop the answered request from the queue right away anyway.
+							// T-208/T-235: a host answer with neither a snapshot nor a changed list.
+							// Drop the answered request (and apply its revision) right away anyway.
 							answeredDecisions.add(decisionId)
-							decisions = decisions.filter(function (entry) { return entry === null || entry === undefined || entry.id !== decisionId })
+							decisionDomain.answered(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
 							receivedAt = clock()
 							emit()
 						}
@@ -4607,24 +4797,31 @@ const createTaskStore = (function () {
 			}
 
 			/**
-			 * T-208: refresh ONLY the pending decision queue. The conversation-page
-			 * overlay polls this instead of /state, so a shell overlay never pulls the
-			 * whole board every few seconds. It reads and writes no other domain and
-			 * never enters the action-result channel.
+			 * T-208/T-235: refresh ONLY the pending decision queue, through the decisions
+			 * domain.
+			 *
+			 * BOTH surfaces (the panel modal and the conversation-page overlay) call this
+			 * through the store's ONE 5 s cadence, and the single flight below collapses
+			 * whatever still overlaps into a single decisionList request. It reads and
+			 * writes no other domain and never enters the action-result channel.
+			 *
+			 * The answer's decisionRevision decides whether it lands: an older (or equal)
+			 * revision than the queue on screen is discarded, so a slow answer cannot
+			 * repaint a newer queue. A failure keeps the last good queue (degraded).
 			 */
 			async function loadDecisions(options) {
-				// T-211: SINGLE FLIGHT per queue refresh. Every surface (the panel and
-				// the conversation overlay) shares this promise instead of racing N
-				// decisionList requests, and a hung one cannot block the next tick:
-				// the optional timeout releases the guard in finally.
+				// T-211: SINGLE FLIGHT per queue refresh. Every surface shares this promise
+				// instead of racing N decisionList requests, and a hung one cannot block the
+				// next tick: the optional timeout releases the guard in finally.
 				if (decisionsLoading !== null) return decisionsLoading
 				const opts = options === undefined || options === null ? {} : options
 				const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : DECISION_LOAD_TIMEOUT_MS
+				const project = tcPinnedProject()
+				const token = decisionDomain.begin(project === null ? '__session__' : projectKeyOf(project))
 				decisionsLoading = (async function () {
 					let timer = null
 					try {
 						const body = { action: 'decisionList', decisionStatus: 'pending', session: tcSessionId() }
-						const project = tcPinnedProject()
 						if (project !== null) body.project = project
 						const request = fetchJson(tcWithSession(TC_ACTION_URL), {
 							method: 'POST',
@@ -4641,16 +4838,32 @@ const createTaskStore = (function () {
 							request.catch(function () {})
 						}
 						const payload = timeout === null ? await request : await Promise.race([request, timeout])
-						if (payload === DECISION_LOAD_TIMEOUT) return { ok: false, timedOut: true, payload: null }
+						// A reset (project switch) or a newer request owns the domain now.
+						if (!decisionDomain.current(token)) return { ok: false, stale: true, payload: null }
+						if (payload === DECISION_LOAD_TIMEOUT) {
+							decisionDomain.fail(token, { message: 'the decision list timed out' }, 'degraded')
+							emit()
+							return { ok: false, timedOut: true, payload: null }
+						}
 						if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.decisions)) {
+							const revision = Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null
 							// The queue carries its own receipt time for the countdown; every
 							// other domain stays exactly as it is.
-							absorbDecisions(payload)
+							const landed = decisionDomain.succeed(token, payload.decisions, revision)
+							if (landed === true) receivedAt = clock()
 							emit()
-							return { ok: true, decisions: payload.decisions }
+							if (landed !== true) return { ok: false, stale: true, revision: revision, decisions: payload.decisions }
+							return { ok: true, decisions: payload.decisions, revision: revision }
 						}
+						decisionDomain.fail(token, payload === undefined ? null : payload, 'degraded')
+						emit()
 						return { ok: false, payload: payload === undefined ? null : payload }
 					} catch (error) {
+						// A failed refresh keeps the last good queue: the modal must not vanish.
+						if (decisionDomain.current(token)) {
+							decisionDomain.fail(token, error, 'degraded')
+							emit()
+						}
 						return { ok: false, error: error }
 					} finally {
 						if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer)
@@ -4907,6 +5120,61 @@ const createTaskStore = (function () {
 				}
 			}
 
+			/** One visibility listener serves BOTH pollers (the board and the queue). */
+			function ensureVisibilityHandler() {
+				if (typeof document === 'undefined' || document === null || typeof document.addEventListener !== 'function') return
+				if (visibilityHandler !== null) return
+				visibilityHandler = function () {
+					if (pageHidden()) return
+					if (timer !== null) void load()
+					if (decisionTimer !== null) void loadDecisions()
+				}
+				document.addEventListener('visibilitychange', visibilityHandler)
+			}
+
+			function releaseVisibilityHandler() {
+				// The listener stays only while at least one poller still needs it.
+				if (timer !== null || decisionTimer !== null) return
+				if (visibilityHandler !== null && typeof document !== 'undefined' && document !== null && typeof document.removeEventListener === 'function') {
+					document.removeEventListener('visibilitychange', visibilityHandler)
+				}
+				visibilityHandler = null
+			}
+
+			/**
+			 * T-235: register a surface that needs the pending queue kept fresh. The panel
+			 * (through startPolling) and the shell overlay both call this; the timer is
+			 * started by the FIRST caller, kept alive by the others and stopped by the last
+			 * one leaving, so two mounted surfaces never run two decisionList cadences.
+			 */
+			function startDecisionsPolling(ms) {
+				decisionRefs += 1
+				const interval = Number.isFinite(ms) && ms > 0 ? ms : DECISION_POLL_MS
+				if (decisionTimer === null) {
+					// The first paint asks at once; the interval then keeps it fresh.
+					void loadDecisions()
+					if (typeof setInterval === 'function') {
+						decisionTimer = setInterval(function () {
+							// T-233 / T-227: a hidden tab costs nothing and catches up on return.
+							if (pageHidden()) return
+							void loadDecisions()
+						}, interval)
+					}
+					ensureVisibilityHandler()
+				}
+				return decisionRefs
+			}
+
+			/** Release one surface; the cadence stops with the LAST one. */
+			function stopDecisionsPolling() {
+				if (decisionRefs > 0) decisionRefs -= 1
+				if (decisionRefs > 0) return decisionRefs
+				if (decisionTimer !== null && typeof clearInterval === 'function') clearInterval(decisionTimer)
+				decisionTimer = null
+				releaseVisibilityHandler()
+				return 0
+			}
+
 			function startPolling(ms) {
 				if (timer !== null) return
 				timer = setInterval(function () {
@@ -4915,21 +5183,18 @@ const createTaskStore = (function () {
 					if (pageHidden()) return
 					void load()
 				}, ms)
-				if (typeof document !== 'undefined' && document !== null && typeof document.addEventListener === 'function' && visibilityHandler === null) {
-					visibilityHandler = function () {
-						if (!pageHidden()) void load()
-					}
-					document.addEventListener('visibilitychange', visibilityHandler)
-				}
+				// T-235: a panel that polls the board also owns the pending-decision cadence
+				// (a /state answer only bootstraps the queue now).
+				startDecisionsPolling()
+				ensureVisibilityHandler()
 			}
 
 			function stopPolling() {
-				if (timer !== null) clearInterval(timer)
+				if (timer === null) return
+				clearInterval(timer)
 				timer = null
-				if (visibilityHandler !== null && typeof document !== 'undefined' && document !== null && typeof document.removeEventListener === 'function') {
-					document.removeEventListener('visibilitychange', visibilityHandler)
-				}
-				visibilityHandler = null
+				stopDecisionsPolling()
+				releaseVisibilityHandler()
 			}
 
 			return {
@@ -4944,15 +5209,25 @@ const createTaskStore = (function () {
 				},
 				// T-233: the query-cache domains (Phase 2B migrates views onto these
 				// selectors instead of the compatibility snapshot).
+				// T-235: `decisions` is the ONE owner of the pending queue: both decision
+				// surfaces read it through the compatibility snapshot.
 				domains: {
 					board: boardDomain,
 					meta: metaDomain,
 					detail: detailDomain,
+					decisions: decisionDomain,
 				},
+				// T-235: the queue's selector: the last GOOD pending list plus the server
+				// revision it describes (the panel modal and the shell overlay share it).
+				decisionsView: decisionDomain.view,
 				META_STALE_MS: META_STALE_MS,
 				load: load,
 				loadMeta: loadMeta,
 				loadDecisions: loadDecisions,
+				// T-235: the ONE shared decision cadence (ref-counted by surface).
+				startDecisionsPolling: startDecisionsPolling,
+				stopDecisionsPolling: stopDecisionsPolling,
+				DECISION_POLL_MS: DECISION_POLL_MS,
 				// T-211: overlay presence, so the panel header can fall back when the
 				// Host shell has no 'shell.overlay' slot.
 				markDecisionOverlayMounted: markDecisionOverlayMounted,
@@ -13546,11 +13821,13 @@ module.exports = { createTaskCenter }
  *     countdown/free text/high-risk DELETE confirmation. ONE decision is shown
  *     at a time; answering advances the queue automatically.
  *
- * The queue comes from the SHARED task store: the full snapshot already carries
- * `decisions`, and store.loadDecisions() polls only the decision list, so the
- * conversation page never pulls the whole board every few seconds. An answer
- * goes through the same store.send('decisionAnswer') as the panel modal, and
- * the store's one-shot guard is what stops the two surfaces from
+ * The queue comes from the SHARED task store: T-235 gives the pending list ONE
+ * owner (the decisions domain), fed by the store's ONE ref-counted 5 s cadence
+ * — the panel registers on the very same one — so the conversation page never
+ * pulls the whole board and two surfaces never run two decisionList polls. The
+ * snapshot's `decisions`/`decisionRevision` are projections of that domain. An
+ * answer goes through the same store.send('decisionAnswer') as the panel modal,
+ * and the store's one-shot guard is what stops the two surfaces from
  * double-submitting the same request.
  *
  * Placement (T-208, hardened in T-211): the entry is anchored inside the
@@ -13883,9 +14160,19 @@ function createDecisionOverlay(deps) {
 			}
 		}
 
-		// Poll ONLY the decision list (never the board) while the conversation
-		// page is open: this is the lightweight queue refresh the task asks for.
+		// T-235: the pending queue belongs to the SHARED decisions domain. This
+		// overlay registers on the store's ONE ref-counted cadence — the panel
+		// registers on the same one — so two mounted surfaces issue ONE
+		// decisionList per tick instead of each polling on its own. A store
+		// without the cadence API (an older bundle, a test double) keeps the
+		// pre-T-235 local interval.
 		React.useEffect(function () {
+			if (typeof store.startDecisionsPolling === 'function') {
+				store.startDecisionsPolling(POLL_MS)
+				return function () {
+					if (typeof store.stopDecisionsPolling === 'function') store.stopDecisionsPolling()
+				}
+			}
 			if (typeof store.loadDecisions === 'function') void store.loadDecisions()
 			if (typeof setInterval !== 'function') return undefined
 			const handle = setInterval(function () {
@@ -13988,10 +14275,11 @@ function createDecisionOverlay(deps) {
 		}, [attention, attentionPlays])
 
 		/**
-		 * Answer the foregrounded decision through the SHARED store, then refresh
-		 * the queue immediately: the next decision is shown without waiting for
-		 * the poll. A duplicate (the panel modal answered first) is not an error —
-		 * the refresh is the only thing left to do.
+		 * Answer the foregrounded decision through the SHARED store. The store
+		 * applies the answer's decisionRevision to the decisions domain (dropping
+		 * exactly this request), so the next decision is shown without waiting for
+		 * the poll and without a full queue refresh. A duplicate (the panel modal
+		 * answered first) is not an error: the shared queue is already correct.
 		 */
 		function answer(decision, formAnswer) {
 			if (decision === null || decision === undefined || submitting) return
@@ -14003,7 +14291,9 @@ function createDecisionOverlay(deps) {
 				const ok = result !== null && result !== undefined && result.ok === true
 				const duplicate = result !== null && result !== undefined && result.duplicate === true
 				if (ok || duplicate) {
-					if (typeof store.loadDecisions === 'function') void store.loadDecisions()
+					// T-235: the answer's decisionRevision already dropped exactly this request
+					// from the shared queue, and that revision is what stops an older list
+					// answer from resurrecting it. No full queue refresh here.
 					return
 				}
 				const failed = result === null || result === undefined ? null : (result.payload === undefined ? null : result.payload)
