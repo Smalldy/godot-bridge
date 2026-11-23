@@ -833,7 +833,10 @@ function createStatusView(deps) {
 				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
 				h('div', { className: 'gbt-statusactions' },
 					h('span', { className: 'gbt-decklastscan' }, t('statusLastScan') + ' · ' + scanAgo),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
+					// T-233: a plain load() only re-reads the board now; this control
+					// refreshes the PAGE it sits on, so it must also force the deferred
+					// metadata (agent tree / worktrees / environment / activity) to rebuild.
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load({ refresh: true }) } }, '↻ ' + t('refresh')),
 				),
 			),
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },
