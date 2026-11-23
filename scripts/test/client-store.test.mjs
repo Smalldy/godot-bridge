@@ -672,6 +672,41 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   console.log('PASS  T-233 a degraded meta is not retried by the board poll')
 }
 
+// ── T-233 review: a PINNED first paint still asks for /meta exactly once ───
+// The panel is reloaded with a project already pinned, so the FIRST /state
+// answer names the SAME project the pin names. The meta domain starts unscoped:
+// load()'s project-change branch never runs, and the first paint must still ask
+// for the deferred half (agentTree/worktrees/environment/roles/activity), while
+// the routine 2.5 s polls must not ask again.
+{
+  const requests = []
+  let pinned = '/repo'
+  const pinnedDeps = Object.assign({}, deps, {
+    tcPinnedProject: function () { return pinned },
+    tcPinProject: function (value) { pinned = typeof value === 'string' && value !== '' ? value : null },
+  })
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    requests.push(text)
+    if (text.indexOf('/state') === 0) return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', resolvedFrom: 'panel', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    if (text.indexOf('/meta') === 0) return { json: async () => ({ ok: true, project: '/repo', meta: { scope: { light: false }, agentTree: { available: true, root: { id: 's', name: 'lead' }, members: [], count: 0, error: null }, roles: { version: 1 } }, errors: {}, metadata: { split: true, deferred: [] } }) }
+    throw new Error('unexpected request: ' + text)
+  }
+  const pinnedStore = createTaskStore((key) => key, pinnedDeps)
+  await pinnedStore.load()
+  await pinnedStore.loadMeta()
+  const metaCalls = requests.filter((url) => url.indexOf('/meta') === 0)
+  assert.equal(metaCalls.length, 1, 'a pinned first paint asks for /meta once: ' + JSON.stringify(requests))
+  assert.equal(metaCalls[0].indexOf('project=%2Frepo') > 0 || metaCalls[0].indexOf('project=/repo') > 0, true, 'the request names the pinned project: ' + metaCalls[0])
+  assert.equal(pinnedStore.domains.meta.state().scope, '/repo', 'the first paint seeds the meta scope')
+  assert.equal(pinnedStore.getSnapshot().metadata.status, 'ready')
+  assert.equal(pinnedStore.getSnapshot().agentTree.root.name, 'lead')
+  assert.equal(pinnedStore.getSnapshot().roles.version, 1)
+  for (let index = 0; index < 3; index += 1) await pinnedStore.load()
+  assert.equal(requests.filter((url) => url.indexOf('/meta') === 0).length, 1, 'routine polls still request no /meta: ' + JSON.stringify(requests))
+  console.log('PASS  T-233 review: a pinned first paint asks for /meta exactly once')
+}
+
 // ── T-233: the detail domain caches per card and refreshes on updatedAt ────
 {
   const taskRequests = []

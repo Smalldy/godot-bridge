@@ -4172,8 +4172,14 @@ const createTaskStore = (function () {
 				const key = projectKeyOf(project)
 				if (key === null) return
 				const state = metaDomain.state()
-				if (state.scope !== key) return
+				// T-233 review: the FIRST paint seeds the domain with the project the
+				// board answer names. A pinned project EQUALS the board project from the
+				// very first snapshot, so load()'s project-change branch never runs and
+				// the domain would otherwise stay unscoped (and never ask for /meta).
+				if (state.scope !== key) resetMetaDomain(project)
 				if (state.data !== null) return
+				// A recorded failure (degraded) is retried only by an explicit refresh,
+				// and an in-flight request already owns this project.
 				if (state.status !== 'idle') return
 				void loadMeta()
 			}
@@ -9079,7 +9085,10 @@ function createStatusView(deps) {
 				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
 				h('div', { className: 'gbt-statusactions' },
 					h('span', { className: 'gbt-decklastscan' }, t('statusLastScan') + ' · ' + scanAgo),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
+					// T-233: a plain load() only re-reads the board now; this control
+					// refreshes the PAGE it sits on, so it must also force the deferred
+					// metadata (agent tree / worktrees / environment / activity) to rebuild.
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load({ refresh: true }) } }, '↻ ' + t('refresh')),
 				),
 			),
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },

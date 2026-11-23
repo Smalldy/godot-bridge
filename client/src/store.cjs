@@ -575,8 +575,14 @@
 				const key = projectKeyOf(project)
 				if (key === null) return
 				const state = metaDomain.state()
-				if (state.scope !== key) return
+				// T-233 review: the FIRST paint seeds the domain with the project the
+				// board answer names. A pinned project EQUALS the board project from the
+				// very first snapshot, so load()'s project-change branch never runs and
+				// the domain would otherwise stay unscoped (and never ask for /meta).
+				if (state.scope !== key) resetMetaDomain(project)
 				if (state.data !== null) return
+				// A recorded failure (degraded) is retried only by an explicit refresh,
+				// and an in-flight request already owns this project.
 				if (state.status !== 'idle') return
 				void loadMeta()
 			}
