@@ -131,7 +131,7 @@ check('the tool is registered', tools.length === 1 && tools[0].name === 'task_ce
 // T-210: /meta is the deferred half of the snapshot (agent tree, worktrees,
 // environment, activity, roles, archive) so the light first paint never waits
 // for a host inventory.
-check('seven routes are registered', routes.length === 7, routes.map((route) => route.path).join(','))
+check('eight routes are registered', routes.length === 8, routes.map((route) => route.path).join(','))
 check(
   'the routes include state, meta, action, task, list, worktrees and diagnostics',
   ['/state', '/meta', '/action', '/task', '/list', '/worktrees', '/diagnostics'].every((path) => routes.some((route) => route.path === '/godot-bridge/task-center' + path)),
@@ -469,7 +469,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
     secondError = error
   }
   check('the row activates with a subprocess service present', secondError === null, secondError && secondError.stack)
-  check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 7, String(secondTools.length) + '/' + String(secondRoutes.length))
+  check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 8, String(secondTools.length) + '/' + String(secondRoutes.length))
   check('activation spawns no git process', spawned.length === 0, JSON.stringify(spawned))
 }
 
@@ -511,7 +511,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
     thirdError = error
   }
   check('a host without the skills/systemPrompt services still activates', thirdError === null, thirdError && thirdError.stack)
-  check('the tool and routes still wire up without the guide services', thirdTools.length === 1 && thirdRoutes.length === 7, String(thirdTools.length) + '/' + String(thirdRoutes.length))
+  check('the tool and routes still wire up without the guide services', thirdTools.length === 1 && thirdRoutes.length === 8, String(thirdTools.length) + '/' + String(thirdRoutes.length))
   check(
     'both optional services are requested through inject',
     requested.indexOf('skills') >= 0 && requested.indexOf('systemPrompt') >= 0,

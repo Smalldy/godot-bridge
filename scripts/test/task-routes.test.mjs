@@ -2,7 +2,7 @@
 // that /state carries NO legacy Team snapshot. The retired fields (workers /
 // teams / agents / team) must not come back; the panel reads agentTree + scope.
 
-import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
+import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, ACTIVITY_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
 import { pruneBoundedCache } from '../../plugin/task-center/api.mjs'
 import { boardPath } from '../../plugin/task-center/board.mjs'
 import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
@@ -80,10 +80,10 @@ const post = (body, headers) =>
 const routeAgents = createFakeTaskAgents()
 const rig = createRig({ taskAgents: routeAgents })
 const surface = install(rig)
-check('registers state, meta, action, task, list, worktrees and diagnostics', surface.specs.length === 7, String(surface.specs.length))
+check('registers state, meta, activity, action, task, list, worktrees and diagnostics', surface.specs.length === 8, String(surface.specs.length))
 check(
   'the registered paths are the documented ones',
-  [STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, DIAGNOSTICS_PATH].every((path) => surface.byPath.has(path)),
+  [STATE_PATH, META_PATH, ACTIVITY_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, DIAGNOSTICS_PATH].every((path) => surface.byPath.has(path)),
 )
 
 // no project yet
@@ -315,7 +315,64 @@ check(
 // worktrees
 {
   const res = await call(surface, WORKTREES_PATH, {})
-  check('the worktrees route answers', res.json().ok === true && Array.isArray(res.json().worktrees), res.text)
+  const payload = res.json()
+  check('the worktrees route answers', payload.ok === true && Array.isArray(payload.worktrees), res.text)
+  // T-236: the probe answer is the WHOLE worktrees block now (inventory numbers
+  // included), so the status card reads one answer instead of combining /meta's
+  // inventory with this route's probes.
+  check(
+    'T-236 the worktrees answer carries the inventory numbers',
+    payload.available === true && Number.isFinite(payload.total) && Number.isFinite(payload.active) && payload.counts !== undefined && payload.counts !== null,
+    JSON.stringify({ total: payload.total, active: payload.active, counts: payload.counts }),
+  )
+  check('T-236 ...and names the paths it probed', payload.requested === null, JSON.stringify(payload.requested))
+}
+
+// ── T-236: the activity timeline has its OWN cursored endpoint ──────────────
+{
+  let res = await call(surface, ACTIVITY_PATH, {})
+  let payload = res.json()
+  check('the activity route answers', payload.ok === true && Array.isArray(payload.entries) && payload.source === 'board', res.text)
+  check(
+    'the activity answer carries a cursor and the board revision it was derived from',
+    typeof payload.nextCursor === 'string' && payload.nextCursor === payload.cursor && Number.isFinite(payload.revision),
+    JSON.stringify({ cursor: payload.cursor, nextCursor: payload.nextCursor, revision: payload.revision }),
+  )
+  const cursor = payload.nextCursor
+  check('the unfiltered page is newest first and bounded', payload.count >= 1 && payload.count <= payload.limit && typeof payload.entries[0].key === 'string', JSON.stringify({ count: payload.count, limit: payload.limit }))
+
+  // The cursor makes the read INCREMENTAL: nothing new since it, so nothing is
+  // re-delivered and the cursor stays where the client already is.
+  res = await call(surface, ACTIVITY_PATH + '?cursor=' + encodeURIComponent(cursor), {})
+  payload = res.json()
+  check(
+    'a cursored activity read delivers only NEW events',
+    payload.ok === true && payload.count === 0 && payload.entries.length === 0 && payload.nextCursor === cursor,
+    JSON.stringify({ count: payload.count, nextCursor: payload.nextCursor }),
+  )
+
+  // A write moves the timeline: the SAME cursor now yields exactly that event.
+  const created = await post({ action: 'create', title: 'T-236 activity card', verification: { probes: [{ id: 'suite', command: 'npm test' }] } })
+  check('the write that moves the timeline lands', created.json().ok === true, created.text)
+  res = await call(surface, ACTIVITY_PATH + '?cursor=' + encodeURIComponent(cursor), {})
+  payload = res.json()
+  check(
+    'the cursor delivers exactly the new event',
+    payload.ok === true && payload.count === 1 && payload.entries[0].kind === 'create' && payload.entries[0].taskId === created.json().task.id,
+    JSON.stringify(payload.entries),
+  )
+  check('the next cursor moves past the delivered event', typeof payload.nextCursor === 'string' && payload.nextCursor !== cursor, String(payload.nextCursor))
+
+  // ?since= is the same cursor under its older spelling; ?limit= bounds the page.
+  res = await call(surface, ACTIVITY_PATH + '?since=' + encodeURIComponent(cursor) + '&limit=1', {})
+  payload = res.json()
+  check('since= is accepted as the cursor and limit bounds the page', payload.ok === true && payload.count === 1 && payload.limit === 1, JSON.stringify({ count: payload.count, limit: payload.limit }))
+
+  // No project bound is the same SETUP answer every other read gives.
+  rig.state.setSessionRoot(TEST_SESSION, null)
+  res = await call(surface, ACTIVITY_PATH, {})
+  check('activity without a bound project answers no-project-bound', res.json().ok === false && res.json().code === 'no-project-bound', res.text)
+  rig.state.setSessionRoot(TEST_SESSION, PROJECT)
 }
 
 // diagnostics: the dispatch probe reports the subagent edge, never a roster
