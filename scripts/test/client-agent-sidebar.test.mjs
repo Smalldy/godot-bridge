@@ -21,6 +21,11 @@
 // failed /task keeps the last good card, and a project switch clears it. A
 // hidden tab pauses, unmount clears only its own timer, and the sidebar never
 // calls store.load() nor starts/stops the panel's poll.
+//
+// T-234 review: the deletion and freshness holes are covered too. A delete answer
+// (or a /task unknown-task) forgets the card, renders only its id, and stops
+// polling it; a detail older than the board summary never drives the rows; a
+// recorded /meta failure is not retried by the tab cadence.
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -1353,7 +1358,11 @@ guideDispose()
   function createDomainStore(initial) {
     let current = initial
     let agents = initial === null || initial === undefined ? null : initial.agentTree
-    let detail = null
+    // One detail PER CARD ID, like the real domain: a detail read for another
+    // card must never reach this tab.
+    const details = new Map()
+    // Cards the host confirmed are gone: never rendered, never polled again.
+    const gone = new Set()
     const subscribers = new Set()
     const sync = { details: [], agents: 0, loads: 0, startPolling: 0, stopPolling: 0 }
     function emit() {
@@ -1370,10 +1379,17 @@ guideDispose()
         return Promise.resolve({ ok: true })
       },
       getTaskDetail(id) {
-        return detail === null ? null : { id: id, task: detail.task, status: detail.status, error: null }
+        const entry = details.get(id)
+        if (entry === undefined) return null
+        // A hidden entry models the real store refusing a detail whose board
+        // summary has already moved on: the view must fall back to the summary.
+        return { id: id, task: entry.hidden === true ? null : entry.task, status: entry.hidden === true ? 'stale' : entry.status, error: null }
       },
       agentsView() {
         return { agentTree: agents, status: 'ready', error: null, receivedAt: 1 }
+      },
+      isTaskGone(id) {
+        return gone.has(String(id))
       },
       getSnapshot() { return current },
       subscribe(listener) {
@@ -1393,16 +1409,29 @@ guideDispose()
         emit()
       },
       deliverDetail(nextDetail, status) {
-        detail = { task: nextDetail, status: status === undefined ? 'ready' : status }
+        const id = nextDetail !== null && nextDetail !== undefined && nextDetail.id !== undefined && nextDetail.id !== null ? String(nextDetail.id) : ''
+        if (id === '') return
+        gone.delete(id)
+        details.set(id, { task: nextDetail, status: status === undefined ? 'ready' : status, hidden: false })
         emit()
       },
       failDetail() {
-        if (detail === null) return
-        detail = { task: detail.task, status: 'error' }
+        for (const entry of details.values()) entry.status = 'error'
+        emit()
+      },
+      hideDetail(id) {
+        const entry = details.get(String(id))
+        if (entry === undefined) return
+        entry.hidden = true
         emit()
       },
       clearDetail() {
-        detail = null
+        details.clear()
+        gone.clear()
+        emit()
+      },
+      markGone(id) {
+        gone.add(String(id))
         emit()
       },
       setAgents(next) {
@@ -1461,6 +1490,24 @@ guideDispose()
     assert.equal(stageRowNodes(visible.body.node)[2].props['data-agent-stage-session'], 'session-test-detail', 'the test row reads test.deliveredTo from the detail')
     assert.ok(JSON.stringify(stageRowNodes(visible.body.node)[2]).includes('tester-detail-only'), 'the test row names the delivered tester')
 
+    // A detail the store now considers OLDER than the board summary must not
+    // drive the rows: after an action invalidated the card the tab renders the
+    // summary again, instead of offering a reviewer the board no longer names.
+    visibleStore.hideDetail('T-212')
+    const staleRows = stageRowNodes(visible.body.node)
+    assert.equal(staleRows[1].props['data-agent-stage-has-session'], 'false', 'an older detail does not drive the stage rows')
+    assert.ok(JSON.stringify(staleRows[1]).includes('未分配'), 'the summary is rendered instead of the older detail')
+    assert.equal(visible.body.node.props['data-agent-task'], 'T-212', 'the card id still comes from the tab')
+
+    // A detail read for ANOTHER card never reaches this tab (the fake domain is
+    // keyed by id, like the real one).
+    visibleStore.clearDetail()
+    visibleStore.deliverDetail(Object.assign({}, detailOf({ name: 'reviewer-other', id: 'session-other' }), { id: 'T-OTHER' }))
+    assert.equal(stageRowNodes(visible.body.node)[1].props['data-agent-stage-has-session'], 'false', 'another card detail is never rendered')
+    assert.ok(!JSON.stringify(visible.body.node).includes('reviewer-other'), 'another card reviewer never appears')
+    visibleStore.deliverDetail(detailOf(detailOnly, { name: 'tester-detail-only', id: 'session-test-detail' }))
+    assert.equal(stageRowNodes(visible.body.node)[1].props['data-agent-stage-session'], 'session-review-detail', 'this card detail drives the rows again')
+
     // A FAILED detail read keeps the last good card: every row, the delivered
     // reviewer/tester and the task id stay on screen.
     visibleStore.failDetail()
@@ -1482,6 +1529,32 @@ guideDispose()
     assert.ok(JSON.stringify(visible.body.node).includes('空闲'), 'the agents domain supplies the live status')
     visibleStore.setAgents(agentTree)
     assert.ok(JSON.stringify(visible.body.node).includes('运行中'), 'restoring the tree restores the running status')
+
+    // A project switch clears the domains: no card, no stage rows, and no
+    // session is minted for a card that is not there.
+    visibleStore.clearDetail()
+    visibleStore.push(boardOf('D:/another-project', 2000, []))
+    assert.equal(stageRowNodes(visible.body.node).length, 0, 'a switched project drops the previous card rows')
+    assert.ok(JSON.stringify(visible.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
+
+    // A card the HOST confirmed gone is never re-rendered from a board copy the
+    // panel has not refreshed yet: the tab keeps only its id.
+    visibleStore.push(boardOf('D:/project-godot', 3000))
+    assert.equal(stageRowNodes(visible.body.node).length, 3, 'a board that still lists the card renders its summary')
+    visibleStore.markGone('T-212')
+    assert.equal(stageRowNodes(visible.body.node).length, 0, 'a confirmed-gone card renders no rows even from a stale board copy')
+    assert.ok(JSON.stringify(visible.body.node).includes('没有关联任务'), 'a confirmed-gone card keeps only its id')
+
+    // Unmount clears the tab's timer and listener and touches no poller.
+    visible.body.unmount()
+    visible.disposal()
+    tick()
+    assert.deepEqual(visibleStore.sync.details, ['T-212', 'T-212'], 'an unmounted tab never asks for the card again')
+    assert.equal(visibleStore.sync.agents, 2, 'an unmounted tab never asks for the agents again')
+    assert.equal(visibleStore.sync.stopPolling, 0, 'unmount never stops the panel poll')
+    assert.equal(visibleStore.sync.startPolling, 0, 'unmount never starts another poll')
+    assert.equal(intervals.size, 0, 'unmount clears every timer the tab created')
+    assert.equal(visibilityListeners.size, 0, 'unmount removes the visibility listener')
 
     // The last good BOARD survives a failed poll in the legacy snapshot path
     // (the tab has no detail yet, e.g. the guide overview): both real store
@@ -1520,24 +1593,6 @@ guideDispose()
     assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a switch transient cannot seed the last-good cache')
     failureTab.body.unmount()
     failureTab.disposal()
-
-    // A project switch clears the domains: no card, no stage rows, and no
-    // session is minted for a card that is not there.
-    visibleStore.clearDetail()
-    visibleStore.push(boardOf('D:/another-project', 2000, []))
-    assert.equal(stageRowNodes(visible.body.node).length, 0, 'a switched project drops the previous card rows')
-    assert.ok(JSON.stringify(visible.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
-
-    // Unmount clears the tab's timer and listener and touches no poller.
-    visible.body.unmount()
-    visible.disposal()
-    tick()
-    assert.deepEqual(visibleStore.sync.details, ['T-212', 'T-212'], 'an unmounted tab never asks for the card again')
-    assert.equal(visibleStore.sync.agents, 2, 'an unmounted tab never asks for the agents again')
-    assert.equal(visibleStore.sync.stopPolling, 0, 'unmount never stops the panel poll')
-    assert.equal(visibleStore.sync.startPolling, 0, 'unmount never starts another poll')
-    assert.equal(intervals.size, 0, 'unmount clears every timer the tab created')
-    assert.equal(visibilityListeners.size, 0, 'unmount removes the visibility listener')
 
     // A hidden tab pauses: no request at mount and none on the tick; becoming
     // visible catches up at once and resumes the 5 s interval.
@@ -1610,11 +1665,14 @@ guideDispose()
     {
       const { createTaskStore } = require('../../client/src/store.cjs')
       const requests = []
+      const actions = []
       let now = 1000000
       let project = '/repo'
       let boardTasks = [boardCard]
       let detailCard = detailOf(null)
       let taskFailing = false
+      let taskGone = false
+      let metaFailing = false
       const deps = {
         TC_STATE_URL: '/state',
         TC_WORKTREES_URL: '/worktrees',
@@ -1642,7 +1700,7 @@ guideDispose()
         tcPinProject: () => {},
         tcNow: () => now,
       }
-      globalThis.fetch = async (url) => {
+      globalThis.fetch = async (url, options) => {
         const text = String(url)
         requests.push(text)
         if (text.indexOf('/state') === 0) {
@@ -1660,6 +1718,9 @@ guideDispose()
           }
         }
         if (text.indexOf('/meta') === 0) {
+          if (metaFailing) {
+            return { json: async () => ({ ok: false, project: project, errors: { agentTree: 'agent registry unavailable' }, metadata: { split: true, deferred: [] } }) }
+          }
           return {
             json: async () => ({
               ok: true,
@@ -1671,8 +1732,19 @@ guideDispose()
           }
         }
         if (text.indexOf('/task') === 0) {
+          if (taskGone) return { json: async () => ({ ok: false, code: 'unknown-task', message: 'no task with id T-212' }) }
           if (taskFailing) return { json: async () => ({ ok: false, code: 'failed', message: 'detail read failed' }) }
           return { json: async () => ({ ok: true, task: detailCard }) }
+        }
+        if (text.indexOf('/action') === 0) {
+          const body = JSON.parse(options.body)
+          actions.push(body.action + ':' + String(body.id === undefined ? (body.taskId === undefined ? body.decisionId : body.taskId) : body.id))
+          if (body.action === 'decisionAnswer') {
+            // A DELETE-gated dependency-tree purge: its applied summary names EVERY
+            // removed id, which is what the store has to forget.
+            return { json: async () => ({ ok: true, seq: 11, decision: { id: body.decisionId, status: 'answered' }, applied: { ok: true, executed: true, code: null, action: 'delete-tree', option: 'purge', summary: { deleted: ['T-212', 'T-DEP'] } }, affected: { ids: ['T-212', 'T-DEP'], count: 2 }, changed: ['board', 'detail', 'decisions'] }) }
+          }
+          return { json: async () => ({ ok: true, seq: 9, affected: { ids: ['T-212'], count: 1 }, changed: ['board', 'detail'] }) }
         }
         throw new Error('unexpected request: ' + text)
       }
@@ -1720,9 +1792,47 @@ guideDispose()
       assert.equal(stageRowNodes(realBody.node)[1].props['data-agent-stage-session'], 'session-rev212', 'a failed /task keeps the last good reviewer')
       assert.equal(realBody.node.props['data-agent-task'], 'T-212', 'a failed /task keeps the card id')
 
+      // ── a write invalidates the detail: the tab renders the SUMMARY at once ──
+      // T-234 review: the domain keeps the old card as lastGood after an action,
+      // but its recorded updatedAt no longer matches the summary. The tab must
+      // not keep offering the reviewer the summary no longer names: it renders
+      // the summary until the next detail read lands.
+      taskFailing = false
+      boardTasks = [Object.assign({}, boardCard, { updatedAt: '2026-11-21T07:00:00.000Z' })]
+      await realStore.send('update', { id: 'T-212' })
+      await flush()
+      assert.equal(actions[actions.length - 1], 'update:T-212', 'the update went through the real action route')
+      const afterAction = realStore.getTaskDetail('T-212')
+      assert.ok(afterAction !== null && afterAction.task === null, 'a detail older than the board summary is not handed to the view: ' + JSON.stringify(afterAction))
+      assert.equal(stageRowNodes(realBody.node)[1].props['data-agent-stage-has-session'], 'false', 'the rows fall back to the summary right after the action')
+      // The next tick re-reads the card and the fresh detail drives the rows again.
+      detailCard = detailOf({ name: 'reviewer-t-212', id: 'session-rev212' })
+      mark = requests.length
+      now += 5000
+      tick()
+      await flush()
+      assert.equal(requests.slice(mark).filter((url) => url.indexOf('/task?id=T-212') === 0).length, 1, 'the tick re-reads the invalidated card')
+      assert.equal(stageRowNodes(realBody.node)[1].props['data-agent-stage-session'], 'session-rev212', 'the refreshed detail drives the rows again')
+
+      // ── a recorded /meta failure is not retried by the tab cadence ─────────
+      // T-234 review: the tab is a routine poller, so a dead /meta waits for the
+      // panel's explicit refresh (same policy as maybeLoadMeta) instead of being
+      // re-asked by every open tab.
+      metaFailing = true
+      now += 11000
+      mark = requests.length
+      tick()
+      await flush()
+      assert.equal(requests.slice(mark).filter((url) => url.indexOf('/meta') === 0).length, 1, 'the tab asked the stale agents block once')
+      now += 11000
+      mark = requests.length
+      tick()
+      await flush()
+      assert.equal(requests.slice(mark).filter((url) => url.indexOf('/meta') === 0).length, 0, 'a recorded /meta failure is not retried by the tab')
+      metaFailing = false
+
       // A real project switch clears the detail and the agents domain: the tab
       // shows no borrowed card.
-      taskFailing = false
       project = '/repo-b'
       boardTasks = []
       now += 5000
@@ -1731,8 +1841,128 @@ guideDispose()
       assert.equal(realStore.getTaskDetail('T-212'), null, 'the project switch clears the card detail')
       assert.equal(stageRowNodes(realBody.node).length, 0, 'the switched project shows no stage rows')
       assert.ok(JSON.stringify(realBody.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
+
+      // Back on the first project the tab reads its card again...
+      project = '/repo'
+      boardTasks = [Object.assign({}, boardCard, { updatedAt: '2026-11-21T07:00:00.000Z' })]
+      now += 5000
+      await realStore.load()
+      await flush()
+      assert.equal(stageRowNodes(realBody.node).length, 3, 'the card is back on the board (summary rows)')
+
+      // ── a DELETE answer forgets the card for good ─────────────────────────
+      // T-234 review: delete is not an invalidate. The removed card must not stay
+      // as lastGood (it would be painted back), and its id must stop being polled.
+      taskGone = true
+      boardTasks = []
+      await realStore.send('delete', { id: 'T-212' })
+      await flush()
+      assert.equal(actions[actions.length - 1], 'delete:T-212', 'the delete went through the real action route')
+      assert.equal(realStore.getTaskDetail('T-212'), null, 'a deleted card is dropped from the detail domain')
+      assert.equal(stageRowNodes(realBody.node).length, 0, 'a deleted card renders no stage rows')
+      assert.ok(JSON.stringify(realBody.node).includes('没有关联任务'), 'a deleted card keeps its id and says it has no task')
+      mark = requests.length
+      now += 5000
+      tick()
+      await flush()
+      assert.equal(requests.slice(mark).filter((url) => url.indexOf('/task?id=T-212') === 0).length, 0, 'a confirmed-deleted card is not polled again: ' + JSON.stringify(requests.slice(mark)))
+      // Even a stale board poll that still lists the card cannot bring it back.
+      assert.equal(realStore.isTaskGone('T-212'), true, 'the store remembers the deleted id')
+      boardTasks = [boardCard]
+      await realStore.load()
+      await flush()
+      assert.equal(stageRowNodes(realBody.node).length, 0, 'a stale board copy never re-renders a deleted card')
+      boardTasks = []
+      await realStore.load()
+      await flush()
+
+      // A DELETE-gated decision purges a whole dependency tree: every id its
+      // applied summary names is forgotten, not only the tab's own card.
+      taskGone = false
+      detailCard = Object.assign({}, detailOf(null), { id: 'T-DEP' })
+      await realStore.ensureTaskDetail('T-DEP')
+      await flush()
+      assert.ok(realStore.getTaskDetail('T-DEP') !== null, 'the dependency card detail is cached first')
+      await realStore.send('decisionAnswer', { decisionId: 'DEC-TREE', option: 'purge' })
+      await flush()
+      assert.equal(actions[actions.length - 1], 'decisionAnswer:DEC-TREE', 'the purge went through the decision route')
+      assert.equal(realStore.getTaskDetail('T-212'), null, 'the purged tree forgets the tab card too')
+      assert.equal(realStore.getTaskDetail('T-DEP'), null, 'the purged tree forgets each named id')
+      const beforePurgedPoll = requests.length
+      await realStore.ensureTaskDetail('T-DEP')
+      assert.equal(requests.length, beforePurgedPoll, 'a purged card is not polled either')
       realBody.unmount()
       realDispose()
+    }
+
+    // ── a card the host no longer has: /task answers unknown-task ────────────
+    // T-234 review: a tab opened for a card that no longer exists must neither
+    // paint a cached card nor keep asking for it every 5 s.
+    {
+      const { createTaskStore } = require('../../client/src/store.cjs')
+      const requests = []
+      let now = 2000000
+      const deps = {
+        TC_STATE_URL: '/state',
+        TC_WORKTREES_URL: '/worktrees',
+        TC_TASK_URL: '/task',
+        TC_LIST_URL: '/list',
+        TC_ACTION_URL: '/action',
+        tcSnapshot: (payload, source, message) => ({
+          ok: payload.ok === true,
+          project: payload.project === undefined ? null : payload.project,
+          source: source,
+          message: message,
+          tasks: Array.isArray(payload.tasks) ? payload.tasks : [],
+          counts: payload.counts === undefined ? {} : payload.counts,
+          details: {},
+          seq: null,
+          activityEvents: null,
+          actionResult: null,
+          actionError: null,
+        }),
+        tcPinnedProject: () => null,
+        tcMergeSnapshot: (previous, payload) => Object.assign({}, previous, payload, { source: 'host' }),
+        tcErrorMessage: () => 'error',
+        tcWithSession: (url) => url,
+        tcSessionId: () => 'session-test',
+        tcPinProject: () => {},
+        tcNow: () => now,
+      }
+      globalThis.fetch = async (url) => {
+        const text = String(url)
+        requests.push(text)
+        if (text.indexOf('/state') === 0) {
+          return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', resolvedFrom: 'panel', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+        }
+        if (text.indexOf('/meta') === 0) {
+          return { json: async () => ({ ok: true, project: '/repo', meta: { scope: { light: false }, agentTree: agentTree }, errors: {}, metadata: { split: true, deferred: [] } }) }
+        }
+        if (text.indexOf('/task') === 0) return { json: async () => ({ ok: false, code: 'unknown-task', message: 'no task with id T-212' }) }
+        throw new Error('unexpected request: ' + text)
+      }
+      const goneStore = createTaskStore((key) => key, deps)
+      await goneStore.load()
+      await flush()
+      requests.length = 0
+      now += 11000
+      const goneHost = createHost()
+      const goneView = createView()
+      const goneDispose = goneView.mount(goneHost.host, { store: goneStore, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+      const goneBody = mountBody(goneView.Body, tabProps)
+      await flush()
+      assert.equal(requests.filter((url) => url.indexOf('/task?id=T-212') === 0).length, 1, 'the tab asked for the card it was opened from: ' + JSON.stringify(requests))
+      assert.equal(requests.filter((url) => url.indexOf('/state') === 0).length, 0, 'opening a tab for a gone card requests no /state')
+      assert.equal(goneStore.getTaskDetail('T-212'), null, 'an unknown-task answer never becomes a lastGood card')
+      assert.equal(stageRowNodes(goneBody.node).length, 0, 'a gone card renders no stage rows')
+      assert.ok(JSON.stringify(goneBody.node).includes('没有关联任务'), 'a gone card keeps its id and says it has no task')
+      const goneMark = requests.length
+      now += 5000
+      tick()
+      await flush()
+      assert.equal(requests.slice(goneMark).filter((url) => url.indexOf('/task?id=T-212') === 0).length, 0, 'a confirmed-gone card is not polled again')
+      goneBody.unmount()
+      goneDispose()
     }
   } finally {
     globalThis.setInterval = realSetInterval
@@ -1772,6 +2002,7 @@ assert.ok(BUNDLE.includes('ensureTaskDetail'), 'the shipped bundle carries the p
 assert.ok(BUNDLE.includes('getTaskDetail'), 'the shipped bundle carries the per-card detail reader')
 assert.ok(BUNDLE.includes('ensureAgents'), 'the shipped bundle carries the agents-domain request')
 assert.ok(BUNDLE.includes('agentsView'), 'the shipped bundle carries the agents view')
+assert.ok(BUNDLE.includes('isTaskGone'), 'the shipped bundle carries the confirmed-gone card guard')
 
 // T-227/T-234: the tab owns only its own refresh timer; the panel's poll is not
 // its to start or stop, and the sidebar module never calls either method.
@@ -1786,4 +2017,4 @@ assert.ok(AGENT_SIDEBAR_SOURCE.includes('ensureAgents'), 'the agent tab asks the
 assert.ok(AGENT_SIDEBAR_SOURCE.includes('getTaskDetail'), 'the agent tab renders its card from the detail domain')
 assert.ok(AGENT_SIDEBAR_SOURCE.includes('agentsView'), 'the agent tab renders the agents domain')
 
-console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), and reads ONLY its card detail plus the agents domain (a real store serves the open with /task + /meta and no /state, the 5 s tick re-reads the card inside the meta TTL, a deliveredTo reaches the review/test rows, a failed detail keeps the last good card, a project switch clears it, hidden pauses, unmount clears, and the panel poll is never started or stopped), switches to the host conversation (and says the subagent switch takes the sidebar with it), keeps the last good board through a failed poll in the legacy snapshot path, and degrades safely')
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), and reads ONLY its card detail plus the agents domain (a real store serves the open with /task + /meta and no /state, the 5 s tick re-reads the card inside the meta TTL, a deliveredTo reaches the review/test rows, a failed detail keeps the last good card, an action invalidates the detail so the summary renders until the next read, a recorded /meta failure is not retried by the tab, a delete answer or a /task unknown-task forgets the card and stops polling it, a project switch clears it, hidden pauses, unmount clears, and the panel poll is never started or stopped), switches to the host conversation (and says the subagent switch takes the sidebar with it), keeps the last good board through a failed poll in the legacy snapshot path, and degrades safely')

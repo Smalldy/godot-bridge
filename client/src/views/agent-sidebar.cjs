@@ -119,8 +119,11 @@
  *   - the card, the three stage rows and the title read the DETAIL first
  *     (`getTaskDetail(taskId)`), so a review/test deliveredTo that lands while
  *     the panel shows the agent conversation still reaches the tab, and a failed
- *     detail keeps the last good card. Nothing is minted: a card that left the
- *     board keeps its id with no stage;
+ *     detail keeps the last good card. The store hands out only a detail that is
+ *     not older than the board summary, and a card it confirmed is gone is not
+ *     even rendered from a stale board copy, so a deleted card keeps its id with
+ *     no stage while an archived one still resolves through /task. Nothing is
+ *     minted either way;
  *   - the live agent tree comes from the agents domain (`agentsView()`), with the
  *     board snapshot as the fallback for a store without the domains or a tab
  *     opened before the agents answer landed.
@@ -463,6 +466,17 @@ function detailTaskOf(store, taskId) {
 	return isRecord(detail) && isRecord(detail.task) ? detail.task : null
 }
 
+/** T-234: the store has confirmed this card no longer exists (delete / unknown-task). */
+function taskGoneOf(store, taskId) {
+	const id = textOf(taskId)
+	if (id === null || store === null || store === undefined || typeof store.isTaskGone !== 'function') return false
+	try {
+		return store.isTaskGone(id) === true
+	} catch (error) {
+		return false
+	}
+}
+
 /** The agents block of the metadata domain, whether the store exposes it as a value or a call. */
 function agentsBlockOf(store) {
 	if (store === null || store === undefined) return null
@@ -489,9 +503,17 @@ function agentsBlockOf(store) {
 function tabViewOf(store, snapshot, taskId) {
 	const board = isRecord(snapshot) ? snapshot : {}
 	const id = textOf(taskId)
-	const detail = detailTaskOf(store, id)
+	// A card the host CONFIRMED is gone is never rendered again, not even from a
+	// board copy the panel has not refreshed yet: the tab keeps only its id.
+	const gone = taskGoneOf(store, id)
+	const detail = gone === true ? null : detailTaskOf(store, id)
 	const agents = agentsBlockOf(store)
-	const tasks = Array.isArray(board.tasks) ? board.tasks.slice() : []
+	let tasks = Array.isArray(board.tasks) ? board.tasks.slice() : []
+	if (gone === true && id !== null) {
+		tasks = tasks.filter(function (entry) {
+			return !(isRecord(entry) && String(entry.id === undefined || entry.id === null ? '' : entry.id) === id)
+		})
+	}
 	if (detail !== null) {
 		let replaced = false
 		for (let index = 0; index < tasks.length; index += 1) {

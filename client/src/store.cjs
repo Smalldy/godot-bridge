@@ -180,6 +180,17 @@
 					if (entry.data !== null) entry.status = 'stale'
 				})
 			}
+			/**
+			 * T-234: drop ONE card for good (deleted / the host answered
+			 * unknown-task). The generation bump makes a late answer for it unable to
+			 * land, and the entry is gone so no reader can be handed it as lastGood.
+			 */
+			function forget(id) {
+				const entry = entries.get(id)
+				if (entry === undefined) return
+				entry.generation += 1
+				entries.delete(id)
+			}
 			function clear() {
 				epoch += 1
 				entries.clear()
@@ -213,6 +224,7 @@
 				succeed: succeed,
 				fail: fail,
 				invalidate: invalidate,
+				forget: forget,
 				clear: clear,
 				compose: compose,
 			}
@@ -279,6 +291,10 @@
 			let visibilityHandler = null
 			const listeners = new Set()
 			const detailFlights = new Map()
+			// T-234: cards the host has confirmed are GONE (deleted here or answered
+			// unknown-task). Their detail is neither rendered nor re-read, so a
+			// deleted card cannot come back as a cached card. Project-scoped.
+			const missingDetails = new Set()
 			let busy = null
 			// T-208: a decision answer is one-shot and two surfaces can submit it
 			// (the panel's modal and the conversation-page overlay). One store backs
@@ -479,6 +495,23 @@
 				metaDomain.reset(projectKeyOf(project))
 			}
 
+			/** Drop every card detail AND the ids confirmed gone (both are project-scoped). */
+			function clearDetails() {
+				detailDomain.clear()
+				missingDetails.clear()
+			}
+
+			/**
+			 * T-234: a card the host confirmed is GONE. Its detail is dropped (no
+			 * lastGood may repaint it) and the id is remembered so the sidebar's poll
+			 * stops asking for it. A project switch clears the record.
+			 */
+			function forgetDetail(id) {
+				if (typeof id !== 'string' || id === '') return
+				detailDomain.forget(id)
+				missingDetails.add(id)
+			}
+
 			async function fetchJson(url, options) {
 				const response = await fetch(url, options)
 				return await response.json()
@@ -500,12 +533,19 @@
 			 * T-233: load the DEFERRED metadata. Single flight PER PROJECT, never
 			 * awaited by the board's render path.
 			 *
-			 * Only two callers may reach the network: the board's FIRST paint for a
-			 * project (no answer on hand yet) and an explicit/forced refresh. A
+			 * Two callers may reach the network on their own: the board's FIRST paint
+			 * for a project (no answer on hand yet) and an explicit/forced refresh. A
 			 * routine board poll never calls this, and the 10 s staleTime answers a
 			 * duplicate request from the domain instead of asking the host again. A
 			 * failure degrades only the deferred blocks: the board keeps rendering and
 			 * the last good metadata stays merged.
+			 *
+			 * T-234: the sidebar tab is the third caller, through ensureAgents(). It
+			 * polls one card, so its /meta asks are bounded by the same 10 s staleTime,
+			 * by this single flight, and by one extra rule: a RECORDED failure is not
+			 * retried from a tab at all (ensureAgents returns before this call), which
+			 * keeps N open tabs from multiplying a dead endpoint. An explicit refresh
+			 * or a write that reports 'meta' owns that retry.
 			 */
 			async function loadMeta(options) {
 				const o = options === undefined || options === null ? {} : options
@@ -599,6 +639,13 @@
 			async function ensureAgents() {
 				if (metaSupported !== true) return null
 				if (currentProject() === null) return null
+				// T-234 review: the tab is a ROUTINE poller, so a /meta failure that is
+				// already recorded is NOT retried here — same policy as maybeLoadMeta().
+				// The panel's explicit refresh (or a write that reports 'meta') owns the
+				// retry, and N open tabs cannot multiply a dead endpoint into a request
+				// every 5/10 s. The last good tree stays rendered meanwhile.
+				const state = metaDomain.state()
+				if (state.status === 'degraded' || state.status === 'error') return null
 				return loadMeta()
 			}
 
@@ -669,7 +716,7 @@
 							boardFailed = false
 							// T-210/T-233: no project means no metadata and no detail.
 							resetMetaDomain(null)
-							detailDomain.clear()
+							clearDetails()
 							activityLog = []
 							activityCursor = null
 							boardDomain.succeed(token, unbound)
@@ -693,7 +740,7 @@
 								activityLog = []
 								activityCursor = null
 								resetMetaDomain(next.project)
-								detailDomain.clear()
+								clearDetails()
 								// T-208: decision ids are project-scoped; an id answered in project A
 								// must not block the same id in project B.
 								answeredDecisions.clear()
@@ -745,6 +792,35 @@
 				})()
 				boardFlight = { scope: scope, promise: request }
 				return request
+			}
+
+			/**
+			 * T-234 review: which cards a WRITE removed from the board, when its
+			 * answer names them.
+			 *
+			 * A plain delete names the card itself; a DELETE-gated decision can purge a
+			 * whole dependency tree and lists every removed id in its applied summary.
+			 * Any other write is an UPDATE, whose affected ids must stay cached-but-stale
+			 * (the next read refreshes them) — clearing those would blank a live card.
+			 */
+			function deletedIdsOf(action, applied, affectedIds) {
+				const ids = []
+				const push = function (id) {
+					if (typeof id === 'string' && id !== '' && ids.indexOf(id) < 0) ids.push(id)
+				}
+				if (action === 'delete') {
+					affectedIds.forEach(push)
+					return ids
+				}
+				if (applied === null || applied === undefined || applied.executed !== true || applied.ok === false) return ids
+				const summary = applied.summary !== null && applied.summary !== undefined && typeof applied.summary === 'object' ? applied.summary : null
+				if (summary !== null && Array.isArray(summary.deleted)) {
+					summary.deleted.forEach(push)
+					return ids
+				}
+				// A single-card delete decision answers { summary: { taskId, deleted: true } }.
+				if (applied.action === 'delete' && summary !== null && summary.deleted === true) push(summary.taskId)
+				return ids
 			}
 
 			/**
@@ -827,7 +903,7 @@
 								activityLog = []
 								activityCursor = null
 								resetMetaDomain(next.project)
-								detailDomain.clear()
+								clearDetails()
 								answeredDecisions.clear()
 							}
 							boardDomain.succeed(boardToken, next)
@@ -873,7 +949,20 @@
 								metaDomain.invalidate()
 								void loadMeta({ refresh: true })
 							}
-							if (changed.indexOf('detail') >= 0) detailDomain.invalidate(affectedIds)
+							if (changed.indexOf('detail') >= 0) {
+								// T-234 review: a delete is not an invalidate. The removed cards are
+								// dropped (never lastGood again) and their ids are not polled, while
+								// the ids an UPDATE touched stay cached-but-stale for the next read.
+								const removed = deletedIdsOf(action, applied, affectedIds)
+								if (removed.length === 0) {
+									detailDomain.invalidate(affectedIds)
+								} else {
+									const rest = affectedIds.filter(function (id) { return removed.indexOf(id) < 0 })
+									if (rest.length > 0) detailDomain.invalidate(rest)
+									removed.forEach(forgetDetail)
+									emit()
+								}
+							}
 						} else if (decisionId !== null) {
 							// T-208: an older host's answer carries no snapshot and no changed
 							// list. Drop the answered request from the queue right away anyway.
@@ -1028,7 +1117,16 @@
 						const url = tcWithSession(TC_TASK_URL + '?id=' + encodeURIComponent(id) + (project === null ? '' : '&project=' + encodeURIComponent(project)))
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
 						if (payload && payload.ok === true && payload.task !== undefined && payload.task !== null) {
-							if (detailDomain.succeed(token, payload.task)) emit()
+							if (detailDomain.succeed(token, payload.task)) {
+								missingDetails.delete(id)
+								emit()
+							}
+						} else if (payload !== null && payload !== undefined && payload.ok !== true && payload.code === 'unknown-task') {
+							// T-234 review: the host says this card no longer exists. Keeping it
+							// as lastGood (and re-reading it every 5 s) would paint a deleted card
+							// forever, so it is forgotten and its polling stops here.
+							forgetDetail(id)
+							emit()
 						} else {
 							detailDomain.fail(token, payload === undefined ? null : payload)
 						}
@@ -1075,7 +1173,19 @@
 			async function ensureTaskDetail(id) {
 				const key = typeof id === 'string' ? id.trim() : ''
 				if (key === '') return null
+				// A confirmed-gone card is not polled again (the id stays project-scoped).
+				if (missingDetails.has(key)) return null
 				return requestDetail(key, summaryOf(key))
+			}
+
+			/**
+			 * T-234: has the host confirmed this card is GONE (deleted here, or the
+			 * detail read answered unknown-task)? A view must not render it from a
+			 * stale board copy; a project switch forgets the record.
+			 */
+			function isTaskGone(id) {
+				const key = typeof id === 'string' ? id.trim() : ''
+				return key !== '' && missingDetails.has(key)
 			}
 
 			/**
@@ -1086,8 +1196,26 @@
 			function getTaskDetail(id) {
 				const key = typeof id === 'string' ? id.trim() : ''
 				if (key === '') return null
+				// A card the host confirmed is gone is never handed back as lastGood.
+				if (missingDetails.has(key)) return null
 				const entry = detailDomain.stateOf(key)
 				if (entry === null) return null
+				const summary = summaryOf(key)
+				const summaryUpdatedAt = summary === undefined || summary === null || summary.updatedAt === undefined ? null : summary.updatedAt
+				// T-234 review: the board summary has ALREADY moved past this detail (a
+				// write invalidated the domain). Letting the older card drive the stage
+				// rows would offer a delivered reviewer/tester the board no longer names,
+				// so the view gets no card and renders the summary until the next read
+				// lands (the tab re-reads within its 5 s cadence).
+				if (summary !== undefined && entry.data !== null && entry.data.updatedAt !== summaryUpdatedAt) {
+					return {
+						id: key,
+						task: null,
+						status: 'stale',
+						error: entry.error === undefined ? null : entry.error,
+						receivedAt: entry.receivedAt,
+					}
+				}
 				return {
 					id: key,
 					task: entry.data === null ? null : entry.data.task,
@@ -1141,7 +1269,7 @@
 				// deferred half still follows below).
 				if (switched) {
 					resetMetaDomain(next)
-					detailDomain.clear()
+					clearDetails()
 					activityLog = []
 					activityCursor = null
 				}
@@ -1242,6 +1370,7 @@
 				// (and polls) ONE card instead of the whole board.
 				ensureTaskDetail: ensureTaskDetail,
 				getTaskDetail: getTaskDetail,
+				isTaskGone: isTaskGone,
 				ensureAgents: ensureAgents,
 				agentsView: agentsView,
 				startPolling: startPolling,
