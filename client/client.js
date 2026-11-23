@@ -3595,6 +3595,226 @@ function tcHostSessionId() {
 const createTaskStore = (function () {
 	const module = { exports: {} }
 	;(function (module, exports) {
+		/**
+		 * T-233: one DOMAIN of the client query cache.
+		 *
+		 * Every domain of the store (board, meta, detail) keeps its OWN
+		 *   { data, status, receivedAt, error, generation, lastGood, scope }
+		 * instead of sharing one snapshot. One failing endpoint can therefore never
+		 * blank another domain, and an answer from an OLDER request can never
+		 * overwrite a newer one:
+		 *
+		 *   begin(scope)                          start a request, return its token
+		 *   current(token)                        is this answer still the newest?
+		 *   succeed(token, data, status, error)   the answer landed (lastGood moves)
+		 *   fail(token, error, status)            the request failed (lastGood stays)
+		 *   invalidate()                          keep lastGood, bump generation
+		 *   reset(scope)                          drop everything (project switch)
+		 *   fresh()                               is data younger than staleTime?
+		 *
+		 * 'data' is what the view may show, 'lastGood' is the newest answer that
+		 * ever landed, and 'status' says which of the two is on screen.
+		 */
+		function tcCreateDomainCache(options) {
+			const o = options === undefined || options === null ? {} : options
+			const now = typeof o.now === 'function' ? o.now : function () { return Date.now() }
+			const staleTime = Number.isFinite(o.staleTime) && o.staleTime > 0 ? o.staleTime : 0
+			const state = {
+				name: typeof o.name === 'string' && o.name !== '' ? o.name : 'domain',
+				data: null,
+				// idle | loading | ready | degraded | error | stale
+				status: 'idle',
+				receivedAt: 0,
+				error: null,
+				generation: 0,
+				lastGood: null,
+				// The project key this domain's data DESCRIBES (null = not scoped yet).
+				scope: null,
+				staleTime: staleTime,
+			}
+			function begin(scope) {
+				state.generation += 1
+				state.scope = scope === undefined ? null : scope
+				state.status = 'loading'
+				state.error = null
+				return { generation: state.generation, scope: state.scope }
+			}
+			function current(token) {
+				return token !== null && token !== undefined && token.generation === state.generation
+			}
+			function succeed(token, data, status, error) {
+				if (!current(token)) return false
+				state.data = data
+				state.lastGood = data
+				state.status = typeof status === 'string' && status !== '' ? status : 'ready'
+				state.error = error === undefined ? null : error
+				state.receivedAt = now()
+				return true
+			}
+			function fail(token, error, status) {
+				if (!current(token)) return false
+				// lastGood (and data, while it is the last good one) is kept: a failed
+				// refresh must not turn a rendered board into an empty one.
+				state.status = typeof status === 'string' && status !== '' ? status : 'error'
+				state.error = error === undefined ? null : error
+				return true
+			}
+			function invalidate() {
+				state.generation += 1
+				state.status = state.data === null ? 'idle' : 'stale'
+				state.error = null
+			}
+			function reset(scope) {
+				state.generation += 1
+				state.data = null
+				state.lastGood = null
+				state.status = 'idle'
+				state.receivedAt = 0
+				state.error = null
+				state.scope = scope === undefined ? null : scope
+			}
+			function fresh() {
+				return state.data !== null && staleTime > 0 && now() - state.receivedAt < staleTime
+			}
+			return {
+				state: function () { return state },
+				begin: begin,
+				current: current,
+				succeed: succeed,
+				fail: fail,
+				invalidate: invalidate,
+				reset: reset,
+				fresh: fresh,
+			}
+		}
+
+		/**
+		 * T-233: the detail domain, keyed by card id.
+		 *
+		 * /task is the only request that carries a card's FULL detail, so it is
+		 * cached per card and validated by the summary's updatedAt: a poll that did
+		 * not change the card never refetches, a changed card does. The cache EPOCH
+		 * invalidates every card at once on a project switch, so a detail answer for
+		 * the old project can never land on the new board.
+		 */
+		function tcCreateDetailCache(options) {
+			const o = options === undefined || options === null ? {} : options
+			const now = typeof o.now === 'function' ? o.now : function () { return Date.now() }
+			const entries = new Map()
+			let epoch = 0
+			function entryOf(id) {
+				let entry = entries.get(id)
+				if (entry === undefined) {
+					entry = {
+						id: id,
+						data: null,
+						status: 'idle',
+						receivedAt: 0,
+						error: null,
+						generation: 0,
+						lastGood: null,
+						// The summary.updatedAt this detail was read for.
+						updatedAt: null,
+						epoch: epoch,
+					}
+					entries.set(id, entry)
+				}
+				return entry
+			}
+			/** Would a load for this card actually reach the Host? */
+			function needs(id, summary) {
+				const entry = entries.get(id)
+				if (entry === undefined || entry.data === null) return true
+				if (entry.epoch !== epoch) return true
+				// An invalidated (stale) or failed detail is retried even when the card
+				// itself did not move: an action or a transport blip owns that state.
+				if (entry.status === 'stale' || entry.status === 'error') return true
+				const updatedAt = summary === undefined || summary === null ? null : summary.updatedAt
+				return entry.updatedAt !== (updatedAt === undefined ? null : updatedAt)
+			}
+			function begin(id, summaryUpdatedAt) {
+				const entry = entryOf(id)
+				entry.generation += 1
+				entry.epoch = epoch
+				entry.status = 'loading'
+				entry.error = null
+				entry.updatedAt = summaryUpdatedAt === undefined ? null : summaryUpdatedAt
+				return { id: id, epoch: epoch, generation: entry.generation, updatedAt: entry.updatedAt }
+			}
+			function current(token) {
+				const entry = entries.get(token.id)
+				return entry !== undefined && token.epoch === epoch && token.generation === entry.generation
+			}
+			function succeed(token, task) {
+				if (!current(token)) return false
+				const entry = entries.get(token.id)
+				entry.data = { task: task, updatedAt: token.updatedAt }
+				entry.lastGood = entry.data
+				entry.status = 'ready'
+				entry.receivedAt = now()
+				entry.error = null
+				return true
+			}
+			function fail(token, error) {
+				if (!current(token)) return false
+				const entry = entries.get(token.id)
+				// A failed /task keeps the last good detail of the card: the summary
+				// the board already has stays rendered either way.
+				entry.status = 'error'
+				entry.error = error === undefined ? null : error
+				return true
+			}
+			function invalidate(ids) {
+				if (!Array.isArray(ids)) {
+					epoch += 1
+					entries.forEach(function (entry) { entry.generation += 1 })
+					return
+				}
+				ids.forEach(function (id) {
+					const entry = entries.get(id)
+					if (entry === undefined) return
+					entry.generation += 1
+					if (entry.data !== null) entry.status = 'stale'
+				})
+			}
+			function clear() {
+				epoch += 1
+				entries.clear()
+			}
+			/** The legacy { [id]: { task, updatedAt } } shape, only for cards that did not move on. */
+			function compose(tasks) {
+				const summaries = new Map()
+				if (Array.isArray(tasks)) {
+					for (const task of tasks) {
+						if (task !== null && typeof task === 'object') summaries.set(task.id, task)
+					}
+				}
+				const details = {}
+				entries.forEach(function (entry) {
+					if (entry.data === null || entry.epoch !== epoch) return
+					if (entry.status === 'stale') return
+					const summary = summaries.get(entry.id)
+					// The card moved on since this detail was read: the older full detail
+					// would silently contradict the newer summary, so it is not shown.
+					if (summary !== undefined && summary.updatedAt !== entry.data.updatedAt) return
+					details[entry.id] = { task: entry.data.task, updatedAt: entry.data.updatedAt }
+				})
+				return details
+			}
+			return {
+				stateOf: function (id) { return entries.get(id) || null },
+				entries: function () { return Array.from(entries.values()) },
+				needs: needs,
+				begin: begin,
+				current: current,
+				succeed: succeed,
+				fail: fail,
+				invalidate: invalidate,
+				clear: clear,
+				compose: compose,
+			}
+		}
+
 		function createTaskStore(t, deps) {
 			const {
 				TC_STATE_URL,
@@ -3610,10 +3830,22 @@ const createTaskStore = (function () {
 				tcSessionId,
 				tcPinProject,
 			} = deps
+			// T-233: the client half of the /meta TTL. The host answers /meta from a
+			// 10 s cache; the client must not even ASK more often than that, and the
+			// routine 2.5 s board poll no longer drags /meta with it.
+			const META_STALE_MS = 10000
+			// Tests can inject a clock (deps.tcNow); the bundle has no such dep and
+			// falls back to the wall clock.
+			const clock = typeof deps.tcNow === 'function' ? deps.tcNow : function () { return Date.now() }
+			// T-233: the board / meta / detail domains. Decisions, activity and the
+			// banner stay store-level state until Phase 3 gives them their own owners.
+			const boardDomain = tcCreateDomainCache({ name: 'board', now: clock })
+			const metaDomain = tcCreateDomainCache({ name: 'meta', now: clock, staleTime: META_STALE_MS })
+			const detailDomain = tcCreateDetailCache({ now: clock })
 			// The first paint shows the pinned project when there is one; with an empty
 			// pin it shows nothing yet and the first /state answers with the project the
 			// session resolves to (no path to type, T-90).
-			let snapshot = tcSnapshot({
+			let boardFallback = tcSnapshot({
 				ok: false,
 				project: tcPinnedProject(),
 				dispatch: { state: 'paused' },
@@ -3623,46 +3855,27 @@ const createTaskStore = (function () {
 			// T-195: the host's pending decisions and the local arrival time of the
 			// snapshot they came with. The modal counts down from the SERVER's
 			// remainingMs, corrected by this receipt time.
-			snapshot.decisions = []
+			let decisions = []
 			// T-198: the resolved decision policy (settings page). Carried exactly
 			// like the decision queue: server-owned, never derived in the browser.
-			snapshot.decisionPolicy = null
-			snapshot.receivedAt = Date.now()
+			let decisionPolicy = null
+			let receivedAt = clock()
 			// T-111: the Host answers the activity timeline incrementally. Keep what we
 			// already have and ask only for events after the last one we saw.
 			let activityCursor = null
 			let activityLog = []
-			// T-210: the deferred metadata (agent tree, worktrees, environment, the
-			// activity timeline, roles, decision policy, archive) is its own request.
-			// `light=1` /state answers with the board AND the light session scope, so
-			// the cards and the header are ready immediately; the metadata is merged
-			// in when it arrives and NEVER blocks the board or the ready state.
-			//
-			// /meta is derived from /state so the two halves can never point at
-			// different routes (the bundle has no second constant to keep in sync).
-			const TC_META_URL = TC_STATE_URL.replace(/\/state\/?$/, '/meta')
-			// The host advertises the split on every answer (`metadata.split`). An
-			// older host that omits it is never asked for /meta: the full /state it
-			// answered already carries everything.
+			// The host advertises the light/meta split on every answer
+			// (payload.metadata.split). An older host that omits it is never asked
+			// for /meta: the full /state it answered already carries everything.
 			let metaSupported = false
-			let metaCache = null
-			let metaErrors = {}
-			// idle | loading | ready | degraded — the view reports it as
-			// data-metadata-state so 'header ready' never means 'inventory done'.
-			let metaStatus = 'idle'
-			let metaAt = 0
-			// The project the cached answer DESCRIBES. A metadata answer is only ever
-			// merged onto a snapshot of the same project (a project switch must never
-			// paint project A's agent tree onto project B's board).
-			let metaProject = null
 			// { key, refresh, promise } — one metadata request per project.
 			let metaFlight = null
-			// The newest metadata request owns the snapshot; an older answer is
-			// discarded instead of overwriting it.
-			let metaSeq = 0
-			const listeners = new Set()
-			let loading = null
+			// { scope, promise } — one board request per pinned project.
+			let boardFlight = null
 			let timer = null
+			let visibilityHandler = null
+			const listeners = new Set()
+			const detailFlights = new Map()
 			let busy = null
 			// T-208: a decision answer is one-shot and two surfaces can submit it
 			// (the panel's modal and the conversation-page overlay). One store backs
@@ -3678,6 +3891,17 @@ const createTaskStore = (function () {
 			// throw). The task-center header reads this to offer its own clickable
 			// fallback only when the floating entry can never be there.
 			let decisionOverlayMounted = false
+			// T-233: the banner stays store-level (Phase 3 owns its domain). 'action'
+			// is the user's last ACTION outcome (a routine poll keeps it), 'state' is
+			// the board endpoint's own failure (the next good /state clears it), null
+			// means there is nothing to keep.
+			let message = ''
+			let messageKind = null
+			// Did the LAST board answer fail? A poll retry in flight must not turn the
+			// error state back into a healthy one before its own answer lands.
+			let boardFailed = false
+			let actionResult = null
+			let actionError = null
 			// T-211: a hung decision-list request must not wedge the queue forever.
 			// After this long the poll gives up, releases the single-flight guard and
 			// the next tick starts a fresh request.
@@ -3689,22 +3913,13 @@ const createTaskStore = (function () {
 			// correctly asking the user to pick a project. Its text is carried by the
 			// empty state (open-project entry) instead.
 			const UNBOUND_CODE = 'no-project-bound'
-			// Where the current banner text came from, so the next poll knows whether
-			// it may drop it: 'action' is the user's last action outcome (a routine
-			// poll keeps it), 'state' is this endpoint's own failure (the next good
-			// /state clears it), null means there is nothing to keep.
-			let messageKind = null
+			// /meta is derived from /state so the two halves can never point at
+			// different routes (the bundle has no second constant to keep in sync).
+			const TC_META_URL = TC_STATE_URL.replace(/\/state\/?$/, '/meta')
 
 			/** The host's expected "nothing is bound" refusal ({ ok:false, code }). */
 			function isUnbound(payload) {
 				return payload !== null && typeof payload === 'object' && payload.ok !== true && payload.code === UNBOUND_CODE
-			}
-
-			function emit(next) {
-				snapshot = applyMetadata(Object.assign({}, next, { busy: busy }))
-				listeners.forEach(function (listener) {
-					listener()
-				})
 			}
 
 			/** Does this Host advertise the split (/state light + /meta deferred)? */
@@ -3718,80 +3933,23 @@ const createTaskStore = (function () {
 				)
 			}
 
-			function setBusy(next) {
-				if (busy === next) return
-				busy = next
-				emit(snapshot)
+			/** One project identity, however the two sides spell the path. */
+			function projectKeyOf(value) {
+				if (typeof value !== 'string' || value === '') return null
+				const text = String(value).replace(/\\/g, '/').replace(/\/+$/, '')
+				return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
 			}
 
-			/**
-			 * T-210: merge the last GOOD metadata answer onto a snapshot.
-			 *
-			 * A light /state answer carries the board and the light scope; the heavy
-			 * blocks come from /meta (or from an older Host's full answer). A full
-			 * rebuild drops the heavy fields, so this re-applies the cached ones
-			 * instead of flashing them to null. A FAILED metadata request changes
-			 * nothing here: the board keeps rendering and `metadata.status` says
-			 * 'degraded', so the view can word the affected pill instead of spinning.
-			 */
-			function applyMetadata(next) {
-				// T-210 review: NEVER merge an answer that describes another project.
-				// The status is scoped the same way, so a switch shows "loading" for the
-				// new board instead of the old board's ready/degraded state.
-				const project = projectKeyOf(next.project)
-				const projectMatches = project !== null && metaProject !== null && project === metaProject
-				next.metadata = projectMatches
-					? { status: metaStatus, errors: metaErrors, receivedAt: metaAt === 0 ? null : metaAt }
-					: { status: 'idle', errors: {}, receivedAt: null }
-				if (metaCache === null || !projectMatches) return next
-				if (metaCache.scope !== undefined && metaCache.scope !== null) next.scope = metaCache.scope
-				if (metaCache.agentTree !== undefined && metaCache.agentTree !== null) next.agentTree = metaCache.agentTree
-				if (metaCache.worktrees !== undefined && metaCache.worktrees !== null) next.worktrees = metaCache.worktrees
-				if (metaCache.environment !== undefined) next.environment = metaCache.environment
-				if (metaCache.roles !== undefined) next.roles = metaCache.roles
-				if (metaCache.rolePreviews !== undefined) next.rolePreviews = metaCache.rolePreviews
-				if (metaCache.decisionPolicy !== undefined && metaCache.decisionPolicy !== null) next.decisionPolicy = metaCache.decisionPolicy
-				if (metaCache.archivedCount !== undefined && metaCache.archivedCount !== null) next.archivedCount = metaCache.archivedCount
-				if (metaCache.archiveRange !== undefined && metaCache.archiveRange !== null) next.archiveRange = metaCache.archiveRange
-				if (metaCache.nextStep !== undefined) next.nextStep = metaCache.nextStep
-				if (activityLog.length > 0) {
-					next.activityEvents = {
-						available: true,
-						source: 'board',
-						entries: activityLog.slice(0, 50),
-						count: Math.min(activityLog.length, 50),
-						total: activityLog.length,
-						truncated: false,
-						cursor: activityCursor,
-					}
-				}
-				return next
+			/** The board data on screen (the domain, or the first-paint fallback). */
+			function boardData() {
+				const data = boardDomain.state().data
+				return data === null ? boardFallback : data
 			}
 
-			/**
-			 * T-195: carry the pending decision queue onto a snapshot. The server
-			 * sends each request's remainingMs, so the countdown is measured from
-			 * the server deadline; receivedAt turns it into a local elapsed time.
-			 */
-			function withDecisions(next, payload) {
-				const host =
-					payload !== null && payload !== undefined && payload.snapshot !== undefined && payload.snapshot !== null
-						? payload.snapshot
-						: payload
-				if (host !== null && host !== undefined && Array.isArray(host.decisions)) next.decisions = host.decisions
-				else if (!Array.isArray(next.decisions)) next.decisions = []
-				// T-198: the policy rides the same snapshot; a payload without one (a
-				// delta, or an older Host) keeps the last known policy instead of
-				// blanking the settings page.
-				if (host !== null && host !== undefined && host.decisionPolicy !== undefined && host.decisionPolicy !== null) next.decisionPolicy = host.decisionPolicy
-				else if (next.decisionPolicy === undefined) next.decisionPolicy = null
-				next.receivedAt = Date.now()
-				return next
-			}
-
-			async function fetchJson(url, options) {
-				const response = await fetch(url, options)
-				return await response.json()
+			/** The project the panel currently DESCRIBES, or null. */
+			function currentProject() {
+				const project = boardData().project
+				return typeof project === 'string' && project !== '' ? project : null
 			}
 
 			/** Accumulate the Host's incremental activity page (cursor + dedupe by key). */
@@ -3806,17 +3964,127 @@ const createTaskStore = (function () {
 				if (typeof events.cursor === 'string' && events.cursor !== '') activityCursor = events.cursor
 			}
 
-			/** One project identity, however the two sides spell the path. */
-			function projectKeyOf(value) {
-				if (typeof value !== 'string' || value === '') return null
-				const text = String(value).replace(/\\/g, '/').replace(/\/+$/, '')
-				return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
+			/** The { available, source, entries, ... } page the status view renders. */
+			function activityEventPage() {
+				return {
+					available: true,
+					source: 'board',
+					entries: activityLog.slice(0, 50),
+					count: Math.min(activityLog.length, 50),
+					total: activityLog.length,
+					truncated: false,
+					cursor: activityCursor,
+				}
+			}
+
+			/**
+			 * T-195: carry the pending decision queue (and the policy) from a payload.
+			 * The server sends each request's remainingMs, so the countdown is
+			 * measured from the server deadline; receivedAt turns it into a local
+			 * elapsed time.
+			 */
+			function absorbDecisions(payload, host) {
+				const source = host === undefined ? payload : host
+				if (source !== null && source !== undefined && Array.isArray(source.decisions)) decisions = source.decisions
+				if (source !== null && source !== undefined && source.decisionPolicy !== undefined && source.decisionPolicy !== null) decisionPolicy = source.decisionPolicy
+				receivedAt = clock()
+			}
+
+			/**
+			 * T-210/T-233: merge the last GOOD metadata answer onto the view.
+			 *
+			 * A light /state answer carries the board and the light scope; the heavy
+			 * blocks come from the meta domain (or from an older Host's full answer).
+			 * A full board rebuild drops the heavy fields, so this re-applies the
+			 * cached ones instead of flashing them to null. The metadata domain is
+			 * only ever applied to a snapshot of the SAME project.
+			 */
+			function applyMetaBlocks(next, meta) {
+				if (meta.scope !== undefined && meta.scope !== null) next.scope = meta.scope
+				if (meta.agentTree !== undefined && meta.agentTree !== null) next.agentTree = meta.agentTree
+				if (meta.worktrees !== undefined && meta.worktrees !== null) next.worktrees = meta.worktrees
+				if (meta.environment !== undefined) next.environment = meta.environment
+				if (meta.roles !== undefined) next.roles = meta.roles
+				if (meta.rolePreviews !== undefined) next.rolePreviews = meta.rolePreviews
+				if (meta.decisionPolicy !== undefined && meta.decisionPolicy !== null) next.decisionPolicy = meta.decisionPolicy
+				if (meta.archivedCount !== undefined && meta.archivedCount !== null) next.archivedCount = meta.archivedCount
+				if (meta.archiveRange !== undefined && meta.archiveRange !== null) next.archiveRange = meta.archiveRange
+				if (meta.nextStep !== undefined) next.nextStep = meta.nextStep
+			}
+
+			/** How the meta domain's status reads to the panel (idle/loading/ready/degraded). */
+			function metaViewStatus(state) {
+				if (state.status === 'ready' || state.status === 'stale') return state.data === null ? 'idle' : 'ready'
+				if (state.status === 'loading') return 'loading'
+				if (state.status === 'degraded' || state.status === 'error') return 'degraded'
+				return 'idle'
+			}
+
+			/**
+			 * T-233: compose the COMPATIBILITY snapshot the existing views consume.
+			 *
+			 * The domains are the source of truth; this facade only projects them into
+			 * the one shape the pre-refactor views already read (tasks/scope/agentTree/
+			 * metadata/details/...), so no view had to change in Phase 2A.
+			 */
+			function compose() {
+				const boardState = boardDomain.state()
+				const next = Object.assign({}, boardState.data === null ? boardFallback : boardState.data)
+				// A FAILED board poll keeps the last good board (its tasks, project and
+				// counts) and only reports the failure, instead of blanking the lanes.
+				if (boardFailed) next.source = 'error'
+				next.message = message
+				next.busy = busy
+				next.actionResult = actionResult
+				next.actionError = actionError
+				next.receivedAt = receivedAt
+				next.decisions = decisions
+				next.decisionPolicy = decisionPolicy
+				next.details = detailDomain.compose(next.tasks)
+				const project = projectKeyOf(next.project)
+				const metaState = metaDomain.state()
+				const metaMatches = project !== null && metaState.scope !== null && metaState.scope === project
+				next.metadata = metaMatches
+					? {
+						status: metaViewStatus(metaState),
+						errors: metaState.error === null || metaState.error === undefined ? {} : metaState.error,
+						receivedAt: metaState.receivedAt === 0 ? null : metaState.receivedAt,
+					}
+					: { status: 'idle', errors: {}, receivedAt: null }
+				if (metaMatches && metaState.data !== null) applyMetaBlocks(next, metaState.data)
+				if (activityLog.length > 0) next.activityEvents = activityEventPage()
+				return next
+			}
+
+			let snapshot = compose()
+
+			function emit() {
+				snapshot = compose()
+				listeners.forEach(function (listener) {
+					listener()
+				})
+			}
+
+			function setBusy(next) {
+				if (busy === next) return
+				busy = next
+				emit()
+			}
+
+			/** Drop the metadata domain when the panel starts describing another project. */
+			function resetMetaDomain(project) {
+				metaDomain.reset(projectKeyOf(project))
+			}
+
+			async function fetchJson(url, options) {
+				const response = await fetch(url, options)
+				return await response.json()
 			}
 
 			/**
 			 * The /meta URL for the project the panel is SHOWING (not the pin alone:
 			 * during an openProject the pin still names the OLD project while the board
-			 * already shows the new one). `refresh` forces the host to rebuild.
+			 * already shows the new one). refresh=1 forces the host to rebuild.
 			 */
 			function metaUrlFor(project, refresh) {
 				let url = TC_META_URL + '?project=' + encodeURIComponent(project)
@@ -3826,82 +4094,64 @@ const createTaskStore = (function () {
 			}
 
 			/**
-			 * Drop the cached metadata when the panel starts describing another project.
-			 * The NEW project becomes the expected owner of the next answer.
-			 */
-			function resetMeta(project) {
-				metaCache = null
-				metaErrors = {}
-				metaStatus = 'idle'
-				metaAt = 0
-				metaProject = projectKeyOf(project)
-			}
-
-			/**
-			 * T-210: load the DEFERRED metadata. Single flight PER PROJECT, never
-			 * awaited by the board's render path. A failure degrades only the deferred
-			 * blocks: the snapshot keeps its board, its light scope and its 'ready'
-			 * state. `options.refresh` asks the host to rebuild (used after an action);
-			 * a forced refresh is never satisfied by a routine in-flight request.
+			 * T-233: load the DEFERRED metadata. Single flight PER PROJECT, never
+			 * awaited by the board's render path.
+			 *
+			 * Only two callers may reach the network: the board's FIRST paint for a
+			 * project (no answer on hand yet) and an explicit/forced refresh. A
+			 * routine board poll never calls this, and the 10 s staleTime answers a
+			 * duplicate request from the domain instead of asking the host again. A
+			 * failure degrades only the deferred blocks: the board keeps rendering and
+			 * the last good metadata stays merged.
 			 */
 			async function loadMeta(options) {
 				const o = options === undefined || options === null ? {} : options
 				if (metaSupported !== true) return null
-				const project = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
+				const project = currentProject()
 				if (project === null) return null
 				const key = projectKeyOf(project)
 				const refresh = o.refresh === true
 				// A request for ANOTHER project invalidates the cached answer and the
 				// reported status BEFORE it lands: nothing of the old board may be shown
 				// as the new board's metadata.
-				if (metaProject !== key) {
-					metaCache = null
-					metaErrors = {}
-					metaAt = 0
-					metaProject = key
-					metaStatus = 'idle'
-				}
+				if (metaDomain.state().scope !== key) resetMetaDomain(project)
+				// A forced refresh is never satisfied by a routine in-flight request.
 				if (metaFlight !== null && metaFlight.key === key && (refresh !== true || metaFlight.refresh === true)) return metaFlight.promise
-				if (metaStatus === 'idle' || (refresh === true && metaStatus !== 'loading')) {
-					metaStatus = 'loading'
-					emit(snapshot)
-				}
-				const seq = ++metaSeq
+				// T-233: the client-side TTL. Within the window a non-forced caller is
+				// answered by the domain, so a remount cannot re-request 10 s early.
+				if (refresh !== true && metaDomain.fresh()) return { ok: true, cached: true }
+				const token = metaDomain.begin(key)
+				emit()
 				const request = (async function () {
 					try {
 						const payload = await fetchJson(metaUrlFor(project, refresh), { headers: { accept: 'application/json' } })
-						// A NEWER request (or a project switch) owns the snapshot now: this
-						// answer describes a board that is no longer on screen, so discard it.
-						if (seq !== metaSeq || projectKeyOf(snapshot.project) !== key) return { ok: false, stale: true }
+						// A NEWER request (or a project switch) owns the domain now: this
+						// answer describes a board that is no longer on screen.
+						if (!metaDomain.current(token)) return { ok: false, stale: true }
 						if (payload === null || payload === undefined || payload.ok !== true) {
-							metaStatus = 'degraded'
-							metaErrors =
+							const errors =
 								payload !== null && payload !== undefined && payload.errors !== null && typeof payload.errors === 'object'
 									? payload.errors
 									: payload !== null && payload !== undefined && typeof payload.message === 'string' && payload.message !== ''
 										? { message: payload.message }
 										: {}
-							metaProject = key
-							emit(snapshot)
+							metaDomain.fail(token, errors, 'degraded')
+							emit()
 							return { ok: false, payload: payload === undefined ? null : payload }
 						}
 						if (isMetaSplit(payload)) metaSupported = true
 						const meta = payload.meta !== undefined && payload.meta !== null && typeof payload.meta === 'object' ? payload.meta : null
 						absorbActivity(meta === null ? null : meta.activityEvents)
-						metaCache = meta
-						metaErrors = payload.errors !== undefined && payload.errors !== null && typeof payload.errors === 'object' ? payload.errors : {}
-						metaAt = Date.now()
-						metaProject = key
-						metaStatus = Object.keys(metaErrors).length > 0 ? 'degraded' : 'ready'
-						emit(snapshot)
+						const errors = payload.errors !== undefined && payload.errors !== null && typeof payload.errors === 'object' ? payload.errors : {}
+						const degraded = Object.keys(errors).length > 0
+						metaDomain.succeed(token, meta, degraded ? 'degraded' : 'ready', degraded ? errors : null)
+						emit()
 						return { ok: true, payload: payload }
 					} catch (error) {
 						// A transport failure is a DEGRADED metadata state, never a board error.
-						if (seq !== metaSeq || projectKeyOf(snapshot.project) !== key) return { ok: false, stale: true }
-						metaStatus = 'degraded'
-						metaErrors = { message: String((error && error.message) || error) }
-						metaProject = key
-						emit(snapshot)
+						if (!metaDomain.current(token)) return { ok: false, stale: true }
+						metaDomain.fail(token, { message: String((error && error.message) || error) }, 'degraded')
+						emit()
 						return { ok: false, error: error }
 					} finally {
 						if (metaFlight !== null && metaFlight.promise === request) metaFlight = null
@@ -3912,61 +4162,96 @@ const createTaskStore = (function () {
 			}
 
 			/**
-			 * One poll. `options.refresh` forces the deferred metadata to be rebuilt
-			 * (the panel's refresh action); the routine 2.5 s poll keeps the host's
-			 * short-TTL answer.
+			 * T-233: does the board's first paint for this project still need /meta?
+			 * Only a project whose metadata was never answered (or was reset by a
+			 * switch) asks; a recorded failure waits for an explicit refresh, so a
+			 * dead /meta cannot be retried on every 2.5 s poll.
+			 */
+			function maybeLoadMeta(project) {
+				if (metaSupported !== true) return
+				const key = projectKeyOf(project)
+				if (key === null) return
+				const state = metaDomain.state()
+				if (state.scope !== key) return
+				if (state.data !== null) return
+				if (state.status !== 'idle') return
+				void loadMeta()
+			}
+
+			/**
+			 * T-233: one board poll.
+			 *
+			 * /state?light=1 is the light first paint AND the routine poll. Requests
+			 * are single-flight per pinned project, every request owns a generation
+			 * (an older answer is discarded), and the board domain's lastGood survives
+			 * a failed poll. options.refresh is the panel's explicit refresh: it
+			 * bypasses the single-flight and forces the deferred metadata to rebuild.
 			 */
 			async function load(options) {
 				const o = options === undefined || options === null ? {} : options
-				if (loading !== null) return loading
+				const refresh = o.refresh === true
 				// No pin means NO ?project=: the Host resolves the session workspace and
 				// answers with the project, which is the whole point of T-90.
 				const pinned = tcPinnedProject()
-				// The v3 panel consumes agentTree/scope; the snapshot no longer carries
-				// any Team inventory, so there is no opt-out to ask for.
-				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
-				// T-210: the light first paint. The heavy metadata (agent tree, worktrees,
-				// environment, activity timeline, roles, decision policy, archive) is a
-				// SEPARATE request, so this answer is never held up by a host inventory.
-				url += (url.indexOf('?') >= 0 ? '&' : '?') + 'light=1'
-				if (snapshot.seq !== null && snapshot.seq !== undefined) url += '&since=' + String(snapshot.seq)
-				url = tcWithSession(url)
-				// T-210: NO second first-paint request. `light=1` IS the first paint.
-				loading = (async function () {
+				const scope = pinned === null ? '__session__' : projectKeyOf(pinned)
+				if (refresh !== true && boardFlight !== null && boardFlight.scope === scope) return boardFlight.promise
+				const token = boardDomain.begin(scope)
+				const request = (async function () {
 					try {
+						let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
+						// T-210: the light first paint. The heavy metadata (agent tree,
+						// worktrees, environment, activity timeline, roles, decision policy,
+						// archive) is the meta domain's own request, so this answer is never
+						// held up by a host inventory.
+						url += (url.indexOf('?') >= 0 ? '&' : '?') + 'light=1'
+						const previous = boardData()
+						if (previous.seq !== null && previous.seq !== undefined) url += '&since=' + String(previous.seq)
+						url = tcWithSession(url)
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
+						// An answer whose generation was superseded (a project switch, an
+						// action invalidation) describes a board that is not on screen.
+						if (!boardDomain.current(token)) return { ok: false, stale: true }
 						if (isUnbound(payload) === true) {
 							// No project yet — the expected pre-setup answer. Keep project null so
 							// the view renders its open-project entry points, say nothing, and
 							// leave no message behind for the binding to inherit.
 							// T-203: the setup snapshot NAMES its source. 'unbound' is not a
 							// project: it is "this session resolves to nothing", so the panel
-							// never shows a last-active project as if the session owned it. An
-							// older Host that omits the field is read the same way.
+							// never shows a last-active project as if the session owned it.
 							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [], resolvedFrom: 'unbound', sessionProject: null }), 'setup', '')
-							withDecisions(unbound, payload)
-							unbound.actionResult = snapshot.actionResult
-							unbound.actionError = snapshot.actionError
+							absorbDecisions(payload)
+							decisions = []
+							decisionPolicy = null
+							message = ''
 							messageKind = null
-							// T-210: no project means no metadata to show (and none from the
-							// project the panel was on before).
-							resetMeta(null)
+							boardFailed = false
+							// T-210/T-233: no project means no metadata and no detail.
+							resetMetaDomain(null)
+							detailDomain.clear()
 							activityLog = []
 							activityCursor = null
-							emit(unbound)
-						} else if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
+							boardDomain.succeed(token, unbound)
+							emit()
+							return { ok: true, payload: payload }
+						}
+						if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
 							// The Host's answer is NOT written to localStorage: only an explicit
 							// switch pins a project, so "follow the session" stays the default.
-							// Only an ACTION's outcome survives a routine poll (see below); what
-							// refreshes here is the board data.
-							const next = withDecisions(tcMergeSnapshot(snapshot, payload), payload)
-							// T-111: accumulate the incremental activity page. A project switch
-							// starts a new log (the old project's events no longer apply).
-							if (next.project !== snapshot.project) {
+							const previousProject = projectKeyOf(previous.project)
+							const next = tcMergeSnapshot(previous, payload)
+							// A GOOD answer is a host answer, whatever the previous poll failed
+							// with (a delta answer must not inherit the error source forever).
+							next.source = 'host'
+							const nextProject = projectKeyOf(next.project)
+							absorbDecisions(payload)
+							// T-111/T-210/T-233: a project switch starts a new activity log and
+							// invalidates EVERY other domain (metadata and details describe the
+							// OLD project now).
+							if (nextProject !== previousProject) {
 								activityLog = []
 								activityCursor = null
-								// T-210: the deferred blocks describe the OLD project; drop them.
-								resetMeta(next.project)
+								resetMetaDomain(next.project)
+								detailDomain.clear()
 								// T-208: decision ids are project-scoped; an id answered in project A
 								// must not block the same id in project B.
 								answeredDecisions.clear()
@@ -3975,51 +4260,54 @@ const createTaskStore = (function () {
 							// split Host sends it from /meta (absorbed in loadMeta).
 							if (payload.activityEvents !== undefined && payload.activityEvents !== null) absorbActivity(payload.activityEvents)
 							if (isMetaSplit(payload)) metaSupported = true
-							if (next.activityEvents !== null && next.activityEvents !== undefined) {
-								next.activityEvents = Object.assign({}, next.activityEvents, { entries: activityLog.slice(0, 50) })
-							}
-							next.actionResult = snapshot.actionResult
-							next.actionError = snapshot.actionError
 							// A routine poll keeps the user's last ACTION outcome (only the board
 							// data refreshes), but the transport's own text stops being true the
 							// moment /state answers again: clear it, so neither the unbound notice
 							// nor a real failure outlives the binding that fixes it.
-							next.message = messageKind === 'action' ? snapshot.message : ''
-							if (messageKind !== 'action') messageKind = null
-							emit(next)
-							// T-210: the board (and the header's base facts) are painted; the
-							// deferred metadata is refreshed in the BACKGROUND and can fail
-							// without touching the board or the ready state.
-							void loadMeta(o.refresh === true ? { refresh: true } : undefined)
-						} else {
-							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
-							failed.decisions = snapshot.decisions
-							failed.decisionPolicy = snapshot.decisionPolicy
-							failed.receivedAt = snapshot.receivedAt
-							failed.actionResult = snapshot.actionResult
-							failed.actionError = snapshot.actionError
-							messageKind = 'state'
-							emit(failed)
+							if (messageKind !== 'action') {
+								message = ''
+								messageKind = null
+							}
+							boardFailed = false
+							boardDomain.succeed(token, next)
+							emit()
+							// T-233: the FIRST paint of a project asks for the deferred half; an
+							// explicit refresh forces the host to rebuild it. A routine poll
+							// never asks for /meta again.
+							if (refresh === true) void loadMeta({ refresh: true })
+							else maybeLoadMeta(next.project)
+							return { ok: true, payload: payload }
 						}
-					} catch (error) {
-						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
-						offline.decisions = snapshot.decisions
-						offline.decisionPolicy = snapshot.decisionPolicy
-						offline.receivedAt = snapshot.receivedAt
-						offline.actionResult = snapshot.actionResult
-						offline.actionError = snapshot.actionError
+						// A real /state failure: keep the last good board (tasks, project,
+						// counts) and report the failure on top of it.
 						messageKind = 'state'
-						emit(offline)
+						message = tcErrorMessage(payload, t)
+						boardFailed = true
+						boardDomain.fail(token, payload === undefined ? null : payload, 'error')
+						if (boardDomain.state().data === null) boardFallback = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', message)
+						emit()
+						return { ok: false, payload: payload === undefined ? null : payload }
+					} catch (error) {
+						if (boardDomain.current(token)) {
+							messageKind = 'state'
+							message = String((error && error.message) || error)
+							boardFailed = true
+							boardDomain.fail(token, error, 'error')
+							if (boardDomain.state().data === null) boardFallback = tcSnapshot(Object.assign({}, boardFallback, { tasks: [] }), 'error', message)
+							emit()
+						}
+						return { ok: false, error: error }
 					} finally {
-						loading = null
+						if (boardFlight !== null && boardFlight.promise === request) boardFlight = null
 					}
 				})()
-				return loading
+				boardFlight = { scope: scope, promise: request }
+				return request
 			}
 
 			/**
 			 * Send one action. options.quiet marks an AUTOMATIC call (the prompt
-			 * preview): it may refresh board data, but it never enters the
+			 * preview): it may refresh data, but it never enters the
 			 * action-result channel, so an automatic request can neither fake nor
 			 * clear the banner of the user's last real action.
 			 */
@@ -4051,55 +4339,106 @@ const createTaskStore = (function () {
 						body: JSON.stringify(payloadBody),
 					})
 					if (payload && payload.ok === true) {
+						// T-231: a WRITE answers { ok, seq, affected, changed } and no board;
+						// an openProject (or an explicit includeSnapshot caller, or an older
+						// host) still carries a light snapshot. Both are handled here.
 						const host = payload.snapshot !== undefined && payload.snapshot !== null ? payload.snapshot : payload
-						if (host && Array.isArray(host.tasks)) {
-							const next = withDecisions(tcSnapshot(host, 'host', '', payload), host)
-							// T-196 review: the ANSWER landed but the host action it stood for
-							// failed (the board moved on, the card is not deletable, ...). The
-							// modal disappears with the decision, so the SAME banner a failed
-							// action uses must explain that nothing happened. An intentional
-							// 取消创建 is not a failure.
-							const applied = payload.applied !== undefined && payload.applied !== null && typeof payload.applied === 'object' ? payload.applied : null
-							const appliedFailed = applied !== null && applied.ok === false && applied.code !== 'decision-rejected'
+						const changed = Array.isArray(payload.changed) ? payload.changed : null
+						const affected = payload.affected !== null && typeof payload.affected === 'object' ? payload.affected : null
+						const affectedIds = affected !== null && Array.isArray(affected.ids) ? affected.ids : []
+						// T-196 review: the ANSWER landed but the host action it stood for
+						// failed (the board moved on, the card is not deletable, ...). The
+						// modal disappears with the decision, so the SAME banner a failed
+						// action uses must explain that nothing happened. An intentional
+						// 取消创建 is not a failure.
+						const applied = payload.applied !== undefined && payload.applied !== null && typeof payload.applied === 'object' ? payload.applied : null
+						const appliedFailed = applied !== null && applied.ok === false && applied.code !== 'decision-rejected'
+						const previousProject = projectKeyOf(boardData().project)
+						if (host !== null && host !== undefined && Array.isArray(host.tasks)) {
+							const next = tcSnapshot(host, 'host', '', payload)
+							const nextProject = projectKeyOf(next.project)
+							const boardToken = boardDomain.begin(nextProject === null ? '__session__' : nextProject)
+							absorbDecisions(host)
+							boardFailed = false
 							if (quiet) {
-								next.actionResult = snapshot.actionResult
-								next.actionError = snapshot.actionError
-								next.message = snapshot.message
+								// An automatic call never touches the user's banner or channel.
 							} else if (appliedFailed) {
 								messageKind = 'action'
-								next.message = typeof applied.message === 'string' && applied.message !== '' ? applied.message : t('decisionAppliedFailed')
-								next.actionResult = null
-								next.actionError = applied
+								message = typeof applied.message === 'string' && applied.message !== '' ? applied.message : t('decisionAppliedFailed')
+								actionResult = null
+								actionError = applied
 							} else {
 								// A real action answered: whatever the banner said is no longer current.
 								messageKind = null
+								message = ''
+								actionResult = payload
+								actionError = null
 							}
 							if (decisionId !== null) answeredDecisions.add(decisionId)
 							// An action's answer (or openProject's full snapshot) also advertises
 							// the split; learn it here so a panel that bound a project before its
 							// first poll still asks for the deferred half.
 							if (isMetaSplit(host) || isMetaSplit(payload)) metaSupported = true
-							// T-210 review: the answer may describe ANOTHER project (openProject).
-							// The metadata of the old board must not survive onto the new one, and
-							// the next /meta must describe the project the board now shows.
-							if (projectKeyOf(next.project) !== projectKeyOf(snapshot.project)) resetMeta(next.project)
-							emit(next)
-							// T-210: an action changes host state (worktrees, environment, roles).
-							// Refresh the deferred blocks in the background; the action answer
-							// itself only carried the light board. A real action forces a rebuild
-							// so the panel never shows pre-action worktrees/environment/roles for
-							// up to the cache TTL; a QUIET automatic call may reuse the cache.
-							void loadMeta(quiet ? undefined : { refresh: true })
+							// T-210 review/T-233: the answer may describe ANOTHER project
+							// (openProject). NOTHING of the old board may survive onto it.
+							if (nextProject !== previousProject) {
+								activityLog = []
+								activityCursor = null
+								resetMetaDomain(next.project)
+								detailDomain.clear()
+								answeredDecisions.clear()
+							}
+							boardDomain.succeed(boardToken, next)
+							emit()
+							// switchProject() asks for the new project's metadata itself, right
+							// after it pins the project: asking here would be a wasted request.
+							if (action !== 'openProject') {
+								if (changed === null) void loadMeta(quiet ? undefined : { refresh: true })
+								else if (changed.indexOf('meta') >= 0) void loadMeta({ refresh: true })
+							}
+						} else if (changed !== null) {
+							// T-231 write envelope. T-233: invalidate only the domains the host
+							// says changed, then let that domain's own cadence refetch.
+							if (!quiet) {
+								if (appliedFailed) {
+									messageKind = 'action'
+									message = typeof applied.message === 'string' && applied.message !== '' ? applied.message : t('decisionAppliedFailed')
+									actionResult = null
+									actionError = applied
+								} else {
+									messageKind = null
+									message = ''
+									actionResult = payload
+									actionError = null
+								}
+							}
+							if (decisionId !== null) {
+								answeredDecisions.add(decisionId)
+								// Drop the answered request from the queue right away so BOTH
+								// surfaces advance without waiting for the next poll.
+								decisions = decisions.filter(function (entry) { return entry === null || entry === undefined || entry.id !== decisionId })
+								receivedAt = clock()
+							}
+							emit()
+							if (changed.indexOf('board') >= 0) {
+								boardDomain.invalidate()
+								// The in-flight pre-action poll would answer with the OLD board;
+								// abandon it (its generation no longer matches) and read now.
+								boardFlight = null
+								void load()
+							}
+							if (changed.indexOf('meta') >= 0) {
+								metaDomain.invalidate()
+								void loadMeta({ refresh: true })
+							}
+							if (changed.indexOf('detail') >= 0) detailDomain.invalidate(affectedIds)
 						} else if (decisionId !== null) {
-							// T-208: the answer response carries no snapshot. Drop the answered
-							// request from the queue right away so BOTH surfaces advance to the
-							// next decision without waiting for the next poll (which the caller
-							// still asks for to confirm the canonical list).
+							// T-208: an older host's answer carries no snapshot and no changed
+							// list. Drop the answered request from the queue right away anyway.
 							answeredDecisions.add(decisionId)
-							emit(Object.assign({}, snapshot, {
-								decisions: (Array.isArray(snapshot.decisions) ? snapshot.decisions : []).filter(function (entry) { return entry === null || entry === undefined || entry.id !== decisionId }),
-								receivedAt: Date.now(),
-							}))
+							decisions = decisions.filter(function (entry) { return entry === null || entry === undefined || entry.id !== decisionId })
+							receivedAt = clock()
+							emit()
 						}
 						return { ok: true, payload: payload }
 					}
@@ -4108,10 +4447,19 @@ const createTaskStore = (function () {
 							// The action was refused because no project is bound yet: the same
 							// setup state /state reports, not a failed operation.
 							messageKind = null
-							emit(Object.assign({}, snapshot, { source: 'setup', message: '', actionResult: null, actionError: null }))
+							message = ''
+							actionResult = null
+							actionError = null
+							const setup = Object.assign({}, boardData(), { source: 'setup' })
+							const setupToken = boardDomain.begin(boardDomain.state().scope)
+							boardDomain.succeed(setupToken, setup)
+							emit()
 						} else {
 							messageKind = 'action'
-							emit(Object.assign({}, snapshot, { message: tcErrorMessage(payload, t), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+							message = tcErrorMessage(payload, t)
+							actionResult = null
+							actionError = payload === undefined || payload === null ? null : payload
+							emit()
 						}
 					}
 					return { ok: false, payload: payload }
@@ -4120,7 +4468,8 @@ const createTaskStore = (function () {
 						// A failed action is still an ACTION outcome: it survives polls like any
 						// other, instead of being cleared by the next good /state.
 						messageKind = 'action'
-						emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
+						message = String((error && error.message) || error)
+						emit()
 					}
 					return { ok: false, error: error }
 				} finally {
@@ -4132,15 +4481,14 @@ const createTaskStore = (function () {
 			/**
 			 * T-208: refresh ONLY the pending decision queue. The conversation-page
 			 * overlay polls this instead of /state, so a shell overlay never pulls the
-			 * whole board every few seconds. It reads and writes no other snapshot
-			 * field and never enters the action-result channel (a background poll must
-			 * not raise the task-center banner).
+			 * whole board every few seconds. It reads and writes no other domain and
+			 * never enters the action-result channel.
 			 */
 			async function loadDecisions(options) {
 				// T-211: SINGLE FLIGHT per queue refresh. Every surface (the panel and
 				// the conversation overlay) shares this promise instead of racing N
 				// decisionList requests, and a hung one cannot block the next tick:
-				// the optional timeout releases the guard in `finally`.
+				// the optional timeout releases the guard in finally.
 				if (decisionsLoading !== null) return decisionsLoading
 				const opts = options === undefined || options === null ? {} : options
 				const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : DECISION_LOAD_TIMEOUT_MS
@@ -4167,9 +4515,10 @@ const createTaskStore = (function () {
 						const payload = timeout === null ? await request : await Promise.race([request, timeout])
 						if (payload === DECISION_LOAD_TIMEOUT) return { ok: false, timedOut: true, payload: null }
 						if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.decisions)) {
-							// withDecisions carries the queue and the receipt time the countdown
-							// needs; every other field (tasks, project, banner) stays as it is.
-							emit(withDecisions(Object.assign({}, snapshot), payload))
+							// The queue carries its own receipt time for the countdown; every
+							// other domain stays exactly as it is.
+							absorbDecisions(payload)
+							emit()
 							return { ok: true, decisions: payload.decisions }
 						}
 						return { ok: false, payload: payload === undefined ? null : payload }
@@ -4222,32 +4571,40 @@ const createTaskStore = (function () {
 			}
 
 			/**
-			 * Fetch one task's full detail on demand (drawer/view open). Cached per
-			 * task updatedAt, so a poll that did not change the card never refetches;
-			 * a changed card drops its cache entry in tcMergeSnapshot.
+			 * T-233: fetch one card's full detail on demand (drawer/form open).
+			 *
+			 * The detail domain caches per card and keyed by the summary's updatedAt:
+			 * a poll that did not change the card never refetches, a changed card does.
+			 * A failed /task keeps the last good detail; it never blanks the card.
 			 */
-			const detailInFlight = new Set()
 			async function loadDetail(id) {
-				const summary = snapshot.tasks.filter(function (task) { return task.id === id })[0]
-				if (summary === undefined) return
-				const cached = snapshot.details[id]
-				if (cached !== undefined && cached.updatedAt === summary.updatedAt) return
-				if (detailInFlight.has(id)) return
-				detailInFlight.add(id)
-				try {
-					const project = tcPinnedProject()
-					const url = tcWithSession(TC_TASK_URL + '?id=' + encodeURIComponent(id) + (project === null ? '' : '&project=' + encodeURIComponent(project)))
-					const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
-					if (payload && payload.ok === true && payload.task !== undefined && payload.task !== null) {
-						emit(Object.assign({}, snapshot, {
-							details: Object.assign({}, snapshot.details, { [id]: { task: payload.task, updatedAt: summary.updatedAt } }),
-						}))
+				if (typeof id !== 'string' || id === '') return null
+				const summaries = boardData().tasks
+				const summary = Array.isArray(summaries) ? summaries.filter(function (task) { return task !== null && task.id === id })[0] : undefined
+				if (summary === undefined) return null
+				if (detailDomain.needs(id, summary) !== true) return null
+				if (detailFlights.has(id)) return detailFlights.get(id)
+				const token = detailDomain.begin(id, summary.updatedAt)
+				const request = (async function () {
+					try {
+						const project = tcPinnedProject()
+						const url = tcWithSession(TC_TASK_URL + '?id=' + encodeURIComponent(id) + (project === null ? '' : '&project=' + encodeURIComponent(project)))
+						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
+						if (payload && payload.ok === true && payload.task !== undefined && payload.task !== null) {
+							if (detailDomain.succeed(token, payload.task)) emit()
+						} else {
+							detailDomain.fail(token, payload === undefined ? null : payload)
+						}
+						return payload
+					} catch (error) {
+						detailDomain.fail(token, error)
+						return { ok: false, error: String((error && error.message) || error) }
+					} finally {
+						if (detailFlights.get(id) === request) detailFlights.delete(id)
 					}
-				} catch (error) {
-					// A failed detail fetch must not blank the card: the summary stays.
-				} finally {
-					detailInFlight.delete(id)
-				}
+				})()
+				detailFlights.set(id, request)
+				return request
 			}
 
 			/**
@@ -4272,18 +4629,33 @@ const createTaskStore = (function () {
 				// it asked for. An AUTOMATIC follow (quiet) must not clear the user's last
 				// real action outcome — that is the quiet contract.
 				const explicit = opts.quiet !== true
-				if (explicit) messageKind = null
-				const bound = Object.assign({}, snapshot, {
+				if (explicit) {
+					message = ''
+					messageKind = null
+				}
+				const current = boardData()
+				const key = projectKeyOf(next)
+				const switched = projectKeyOf(current.project) !== key
+				const bound = Object.assign({}, current, {
 					project: next,
 					projectRoot: next,
 					resolvedFrom: 'panel',
-					source: snapshot.source === 'setup' || snapshot.source === 'error' ? 'host' : snapshot.source,
+					source: current.source === 'setup' || current.source === 'error' ? 'host' : current.source,
 				})
-				if (explicit) bound.message = ''
-				// T-210: the metadata cache belongs to the OLD project. The pin is already
-				// set, so the request below names the NEW project explicitly.
-				if (metaProject !== projectKeyOf(next)) resetMeta(next)
-				emit(bound)
+				const boardToken = boardDomain.begin(key)
+				boardDomain.succeed(boardToken, bound)
+				boardFailed = false
+				// T-233: a project SWITCH invalidates EVERY domain: metadata, per-card
+				// details and the activity timeline all describe the old board. Re-opening
+				// the project already on screen keeps them (an explicit refresh of the
+				// deferred half still follows below).
+				if (switched) {
+					resetMetaDomain(next)
+					detailDomain.clear()
+					activityLog = []
+					activityCursor = null
+				}
+				emit()
 				void loadMeta()
 				return result
 			}
@@ -4311,16 +4683,38 @@ const createTaskStore = (function () {
 				}
 			}
 
+			/** Is the page hidden? A hidden tab stops polling instead of spending requests. */
+			function pageHidden() {
+				try {
+					return typeof document !== 'undefined' && document !== null && document.visibilityState === 'hidden'
+				} catch (error) {
+					return false
+				}
+			}
+
 			function startPolling(ms) {
 				if (timer !== null) return
 				timer = setInterval(function () {
+					// T-233 / T-227: the 2.5 s board poll runs only while the page is
+					// visible; a hidden tab costs nothing and catches up on return.
+					if (pageHidden()) return
 					void load()
 				}, ms)
+				if (typeof document !== 'undefined' && document !== null && typeof document.addEventListener === 'function' && visibilityHandler === null) {
+					visibilityHandler = function () {
+						if (!pageHidden()) void load()
+					}
+					document.addEventListener('visibilitychange', visibilityHandler)
+				}
 			}
 
 			function stopPolling() {
 				if (timer !== null) clearInterval(timer)
 				timer = null
+				if (visibilityHandler !== null && typeof document !== 'undefined' && document !== null && typeof document.removeEventListener === 'function') {
+					document.removeEventListener('visibilitychange', visibilityHandler)
+				}
+				visibilityHandler = null
 			}
 
 			return {
@@ -4333,9 +4727,15 @@ const createTaskStore = (function () {
 				getSnapshot() {
 					return snapshot
 				},
+				// T-233: the query-cache domains (Phase 2B migrates views onto these
+				// selectors instead of the compatibility snapshot).
+				domains: {
+					board: boardDomain,
+					meta: metaDomain,
+					detail: detailDomain,
+				},
+				META_STALE_MS: META_STALE_MS,
 				load: load,
-				// T-210: the deferred metadata can also be refreshed on its own (the
-				// panel's refresh action calls load(), which polls both halves).
 				loadMeta: loadMeta,
 				loadDecisions: loadDecisions,
 				// T-211: overlay presence, so the panel header can fall back when the

@@ -298,12 +298,20 @@ console.log('PASS  one shared store serializes decision answers (panel modal + s
   assert.equal(merged.metadata.errors !== undefined, true)
   console.log('PASS  T-210 the deferred metadata loads on its own and merges onto the board')
 
-  // A FAILED /meta degrades the deferred blocks ONLY: the board, the header
-  // base and the 'ready' state stay exactly as they were.
+  // T-233: the meta domain answers a duplicate request from its own cache inside
+  // the 10 s window instead of asking the Host again, and a routine board poll
+  // never drags /meta along.
   routes.set('/meta', { ok: false, code: 'failed', message: 'inventory unavailable' })
   requests = []
   await splitStore.load()
-  await splitStore.loadMeta()
+  const cachedMeta = await splitStore.loadMeta()
+  assert.equal(cachedMeta.cached, true, 'a /meta answered moments ago is answered from the domain')
+  assert.equal(requests.filter((url) => url.indexOf('/meta') === 0).length, 0, 'the board poll does not request /meta: ' + JSON.stringify(requests))
+  assert.equal(splitStore.getSnapshot().metadata.status, 'ready', 'the cached metadata still reads ready')
+
+  // A FORCED refresh asks the Host again. A FAILED /meta degrades the deferred
+  // blocks ONLY: the board, the header base and the 'ready' state stay as they were.
+  await splitStore.loadMeta({ refresh: true })
   const degraded = splitStore.getSnapshot()
   assert.equal(degraded.source, 'host', 'a metadata failure is not a board failure')
   assert.equal(degraded.message, '', 'a metadata failure never raises the board banner')
@@ -317,7 +325,7 @@ console.log('PASS  one shared store serializes decision answers (panel modal + s
     throw new Error('connect ECONNREFUSED')
   })
   await splitStore.load()
-  await splitStore.loadMeta()
+  await splitStore.loadMeta({ refresh: true })
   assert.equal(splitStore.getSnapshot().source, 'host')
   assert.equal(splitStore.getSnapshot().tasks.length, 2)
   assert.equal(splitStore.getSnapshot().metadata.status, 'degraded')
@@ -326,7 +334,8 @@ console.log('PASS  one shared store serializes decision answers (panel modal + s
 
   // The activity cursor rides /meta (not /state), so the timeline stays incremental.
   routes.set('/meta', fullMeta)
-  await splitStore.load()
+  requests = []
+  await splitStore.loadMeta({ refresh: true })
   const lastUrl = requests[requests.length - 1]
   assert.ok(lastUrl.indexOf('/meta') === 0 && lastUrl.indexOf('activitySince=') > 0, 'the activity cursor rides /meta: ' + lastUrl)
   console.log('PASS  T-210 the activity timeline stays incremental on its own endpoint')
@@ -435,6 +444,377 @@ console.log('PASS  one shared store serializes decision answers (panel modal + s
   const afterRefresh = requests.filter((url) => url.indexOf('/meta') === 0)
   assert.ok(afterRefresh.length >= 1 && afterRefresh[afterRefresh.length - 1].indexOf('refresh=1') > 0, 'the explicit refresh forces a rebuild: ' + JSON.stringify(afterRefresh))
   console.log('PASS  T-210 review: action and explicit refresh force a fresh metadata build')
+}
+
+// ── T-233: board / meta / detail are separate query-cache domains ───────────
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+{
+  const calls = []
+  const lightAnswer = (project, tasks) => ({
+    ok: true,
+    full: true,
+    project: project,
+    projectRoot: project,
+    resolvedFrom: 'session',
+    sessionProject: project,
+    counts: { total: tasks.length },
+    tasks: tasks,
+    metadata: { split: true, light: true, deferred: [] },
+  })
+  const metaAnswer = (project) => ({
+    ok: true,
+    project: project,
+    meta: { scope: { light: false }, agentTree: { available: true, root: { id: 'session-test', name: 'lead of ' + project }, members: [], count: 0, error: null } },
+    errors: {},
+    metadata: { split: true, deferred: [] },
+  })
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.indexOf('/state') === 0) return { json: async () => lightAnswer('/repo', [{ id: 'T-1', status: 'pending', title: 'card', updatedAt: 'v1' }]) }
+    if (text.indexOf('/meta') === 0) {
+      const match = /[?&]project=([^&]+)/.exec(text)
+      return { json: async () => metaAnswer(match === null ? '/repo' : decodeURIComponent(match[1])) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const domainStore = createTaskStore((key) => key, deps)
+  await domainStore.load()
+  const metaLanded = await domainStore.loadMeta()
+  assert.equal(metaLanded.ok, true, 'the first paint asks for the deferred metadata')
+  const boardState = domainStore.domains.board.state()
+  const metaState = domainStore.domains.meta.state()
+  assert.equal(boardState.status, 'ready')
+  assert.equal(boardState.data.tasks[0].id, 'T-1')
+  assert.ok(boardState.receivedAt > 0, 'the board domain records its receipt time')
+  assert.ok(boardState.generation >= 1, 'the board domain owns a request generation')
+  assert.equal(boardState.lastGood, boardState.data, 'the last good answer is the shown one')
+  assert.equal(metaState.scope, '/repo', 'the meta domain names the project it describes')
+  assert.equal(metaState.status, 'ready')
+  assert.equal(metaState.data.agentTree.root.name, 'lead of /repo')
+  assert.equal(metaState.staleTime, 10000, 'the meta domain carries the 10 s staleTime')
+  assert.equal(domainStore.META_STALE_MS, 10000)
+  const compatibility = domainStore.getSnapshot()
+  for (const field of ['ok', 'source', 'message', 'project', 'projectRoot', 'tasks', 'counts', 'details', 'seq', 'activityEvents', 'actionResult', 'actionError', 'metadata', 'decisions', 'decisionPolicy', 'receivedAt', 'busy']) {
+    assert.ok(Object.prototype.hasOwnProperty.call(compatibility, field), 'the compatibility snapshot keeps ' + field)
+  }
+  assert.equal(compatibility.domains, undefined, 'the facade never leaks the raw domains into the view shape')
+  assert.equal(compatibility.source, 'host')
+  assert.equal(compatibility.metadata.status, 'ready')
+  assert.equal(compatibility.agentTree.root.name, 'lead of /repo', 'the meta domain is projected into the old shape')
+  assert.equal(compatibility.scope.light, false)
+  console.log('PASS  T-233 board/meta/detail are separate domains behind one compatible snapshot')
+}
+
+// ── T-233: the board poll is single-flight ──────────────────────────────────
+{
+  let calls = 0
+  let release = null
+  globalThis.fetch = (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      calls += 1
+      return new Promise((resolve) => {
+        release = () => resolve({ json: async () => ({ ok: true, full: true, project: '/repo', counts: { total: 1 }, tasks: [{ id: 'T-1', status: 'pending', title: 'first', updatedAt: 'v1' }] }) })
+      })
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const singleStore = createTaskStore((key) => key, deps)
+  const first = singleStore.load()
+  const second = singleStore.load()
+  assert.equal(calls, 1, 'two surface polls share ONE in-flight board request')
+  release()
+  await first
+  await second
+  assert.equal(singleStore.getSnapshot().tasks[0].title, 'first')
+  console.log('PASS  T-233 the 2.5 s board poll is single-flight')
+}
+
+// ── T-233: an action invalidates the board; an older answer cannot land ─────
+{
+  const stateResolvers = []
+  const answer = (project, title) => ({ ok: true, full: true, project: project, projectRoot: project, counts: { total: 1 }, tasks: [{ id: 'T-1', status: 'pending', title: title, updatedAt: 'v1' }] })
+  globalThis.fetch = (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      return new Promise((resolve) => {
+        stateResolvers.push((project, title) => resolve({ json: async () => answer(project, title) }))
+      })
+    }
+    if (text.indexOf('/action') === 0) {
+      return { json: async () => ({ ok: true, seq: 9, changed: ['board'], affected: { ids: ['T-1'], count: 1 } }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const invalidationStore = createTaskStore((key) => key, deps)
+  const initial = invalidationStore.load()
+  stateResolvers[0]('/repo', 'before')
+  await initial
+  assert.equal(invalidationStore.getSnapshot().tasks[0].title, 'before')
+
+  // A poll is in flight when the write invalidates the board domain.
+  const slowPoll = invalidationStore.load()
+  assert.equal(stateResolvers.length, 2)
+  await invalidationStore.send('pause', {})
+  assert.equal(stateResolvers.length, 3, 'the write re-reads the invalidated board once')
+  // The post-action answer lands first; the PRE-action answer arrives later and
+  // must be discarded instead of repainting the old board.
+  stateResolvers[2]('/repo', 'after')
+  await tick()
+  stateResolvers[1]('/repo', 'stale-before')
+  await slowPoll
+  await tick()
+  assert.equal(invalidationStore.getSnapshot().tasks[0].title, 'after', 'an older board generation never overwrites the newer one')
+  console.log('PASS  T-233 an action invalidates the board domain and an older answer cannot land')
+}
+
+// ── T-233: a failed board poll keeps the last good board ────────────────────
+{
+  let failing = false
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      if (failing) return { json: async () => ({ ok: false, code: 'failed', message: 'board read failed' }) }
+      return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 2 }, tasks: [{ id: 'T-1', status: 'pending', title: 'a', updatedAt: 'v1' }, { id: 'T-2', status: 'done', title: 'b', updatedAt: 'v1' }] }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const failedStore = createTaskStore((key) => key, deps)
+  await failedStore.load()
+  assert.equal(failedStore.getSnapshot().tasks.length, 2)
+  failing = true
+  await failedStore.load()
+  const afterFailure = failedStore.getSnapshot()
+  assert.equal(afterFailure.source, 'error', 'the failed poll is still reported')
+  assert.equal(afterFailure.message, 'error:x', 'the store uses the host error text (this fixture maps codes to error:x)')
+  assert.equal(afterFailure.tasks.length, 2, 'a failed poll never blanks the last good board')
+  assert.equal(failedStore.domains.board.state().status, 'error')
+  assert.equal(failedStore.domains.board.state().lastGood.tasks.length, 2, 'the domain keeps its last good answer')
+  failing = false
+  await failedStore.load()
+  assert.equal(failedStore.getSnapshot().source, 'host', 'the next good answer clears the error state')
+  assert.equal(failedStore.getSnapshot().message, '')
+
+  // A TRANSPORT failure behaves the same: error state, last good tasks intact.
+  globalThis.fetch = async () => {
+    throw new Error('connect ECONNREFUSED')
+  }
+  await failedStore.load()
+  assert.equal(failedStore.getSnapshot().source, 'error')
+  assert.equal(failedStore.getSnapshot().tasks.length, 2, 'a transport failure keeps the last good tasks too')
+  assert.ok(failedStore.getSnapshot().message.indexOf('ECONNREFUSED') >= 0)
+  console.log('PASS  T-233 a failed board poll keeps the last good tasks and the next good answer clears it')
+}
+
+// ── T-233: the meta domain has a 10 s staleTime and ignores the board poll ──
+{
+  let now = 1000000
+  const metaRequests = []
+  const metaPayload = { ok: true, project: '/repo', meta: { agentTree: { available: true, root: { id: 's', name: 'lead' }, members: [], count: 0, error: null } }, errors: {}, metadata: { split: true, deferred: [] } }
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    if (text.indexOf('/meta') === 0) {
+      metaRequests.push(text)
+      return { json: async () => metaPayload }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const timedDeps = Object.assign({}, deps, { tcNow: () => now })
+  const timedStore = createTaskStore((key) => key, timedDeps)
+  assert.equal(timedStore.META_STALE_MS, 10000)
+  await timedStore.load()
+  await timedStore.loadMeta()
+  assert.equal(metaRequests.length, 1, 'the first paint asks for /meta exactly once')
+  await timedStore.load()
+  await timedStore.load()
+  await timedStore.load()
+  assert.equal(metaRequests.length, 1, 'routine board polls never request /meta again')
+  const cached = await timedStore.loadMeta()
+  assert.equal(cached.cached, true, 'a /meta younger than 10 s is answered by the meta domain')
+  now += 4000
+  const stillCached = await timedStore.loadMeta()
+  assert.equal(stillCached.cached, true)
+  assert.equal(metaRequests.length, 1, 'inside the 10 s window no second request is made')
+  now += 7000
+  const stale = await timedStore.loadMeta()
+  assert.equal(stale.ok, true)
+  assert.equal(metaRequests.length, 2, 'past the 10 s staleTime a loadMeta() asks the host again')
+  assert.equal(timedStore.getSnapshot().metadata.status, 'ready')
+  console.log('PASS  T-233 the meta domain has a 10 s staleTime and is never dragged by the board poll')
+}
+
+// ── T-233: a DEGRADED meta is not retried by the board poll ────────────────
+{
+  const metaRequests = []
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    if (text.indexOf('/meta') === 0) {
+      metaRequests.push(text)
+      return { json: async () => ({ ok: false, code: 'failed', message: 'inventory unavailable' }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const failingMetaStore = createTaskStore((key) => key, deps)
+  await failingMetaStore.load()
+  await tick()
+  assert.equal(metaRequests.length, 1, 'the first paint tried /meta once')
+  assert.equal(failingMetaStore.getSnapshot().metadata.status, 'degraded')
+  assert.equal(failingMetaStore.getSnapshot().source, 'host', 'a meta failure is not a board failure')
+  await failingMetaStore.load()
+  await failingMetaStore.load()
+  await tick()
+  assert.equal(metaRequests.length, 1, 'a degraded meta is not retried on every 2.5 s poll')
+  await failingMetaStore.loadMeta({ refresh: true })
+  assert.equal(metaRequests.length, 2, 'an explicit refresh retries the degraded metadata')
+  console.log('PASS  T-233 a degraded meta is not retried by the board poll')
+}
+
+// ── T-233: the detail domain caches per card and refreshes on updatedAt ────
+{
+  const taskRequests = []
+  let boardVersion = 'v1'
+  let taskFailing = false
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 1 }, tasks: [{ id: 'T-1', status: 'pending', title: 'card', updatedAt: boardVersion }], metadata: { split: true, light: true, deferred: [] } }) }
+    if (text.indexOf('/meta') === 0) return { json: async () => ({ ok: true, project: '/repo', meta: { agentTree: { available: true, root: { id: 's', name: 'lead' }, members: [], count: 0, error: null } }, errors: {}, metadata: { split: true, deferred: [] } }) }
+    if (text.indexOf('/task') === 0) {
+      taskRequests.push(text)
+      if (taskFailing) return { json: async () => ({ ok: false, code: 'failed', message: 'detail read failed' }) }
+      return { json: async () => ({ ok: true, task: { id: 'T-1', title: 'card', spec: 'full ' + boardVersion, updatedAt: boardVersion } }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const detailStore = createTaskStore((key) => key, deps)
+  await detailStore.load()
+  await detailStore.loadMeta()
+  await detailStore.loadDetail('T-1')
+  assert.equal(taskRequests.length, 1, 'opening the card reads /task once')
+  assert.equal(detailStore.getSnapshot().details['T-1'].task.spec, 'full v1')
+  await detailStore.loadDetail('T-1')
+  assert.equal(taskRequests.length, 1, 'an unchanged card is answered from the detail domain')
+
+  // The card changes: the summary updatedAt is the cache key.
+  boardVersion = 'v2'
+  await detailStore.load()
+  await detailStore.loadDetail('T-1')
+  assert.equal(taskRequests.length, 2, 'a changed card refreshes its detail')
+  assert.equal(detailStore.getSnapshot().details['T-1'].task.spec, 'full v2')
+
+  // A failed /task keeps the last good detail instead of blanking the card.
+  boardVersion = 'v3'
+  taskFailing = true
+  await detailStore.load()
+  await detailStore.loadDetail('T-1')
+  assert.equal(detailStore.domains.detail.stateOf('T-1').status, 'error')
+  assert.equal(detailStore.domains.detail.stateOf('T-1').lastGood.task.spec, 'full v2', 'the last good detail survives a failed read')
+  assert.equal(detailStore.getSnapshot().details['T-1'], undefined, 'a detail read for an older card version is not shown over the newer summary')
+
+  // Reopening retries the failed card even though its updatedAt did not move again.
+  taskFailing = false
+  await detailStore.loadDetail('T-1')
+  assert.equal(detailStore.getSnapshot().details['T-1'].task.spec, 'full v3')
+  console.log('PASS  T-233 the detail domain caches per card, refreshes on updatedAt and keeps last-good')
+}
+
+// ── T-233: a write invalidates exactly the domains it says changed ─────────
+{
+  const stateRequests = []
+  const metaRequests = []
+  const actionRequests = []
+  globalThis.fetch = async (url, options) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      stateRequests.push(text)
+      return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 1 }, tasks: [{ id: 'T-1', status: 'pending', title: 'card', updatedAt: 'v2' }], metadata: { split: true, light: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/meta') === 0) {
+      metaRequests.push(text)
+      return { json: async () => ({ ok: true, project: '/repo', meta: { agentTree: { available: true, root: { id: 's', name: 'lead' }, members: [], count: 0, error: null } }, errors: {}, metadata: { split: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/task') === 0) return { json: async () => ({ ok: true, task: { id: 'T-1', title: 'card', spec: 'full', updatedAt: 'v2' } }) }
+    if (text.indexOf('/action') === 0) {
+      actionRequests.push(JSON.parse(options.body).action)
+      return { json: async () => ({ ok: true, seq: 10, changed: ['board', 'detail', 'meta'], affected: { ids: ['T-1'], count: 1 } }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const preciseStore = createTaskStore((key) => key, deps)
+  await preciseStore.load()
+  await preciseStore.loadMeta()
+  await preciseStore.loadDetail('T-1')
+  const beforeBoard = stateRequests.length
+  const beforeMeta = metaRequests.length
+  await preciseStore.send('update', { id: 'T-1', title: 'renamed' })
+  await tick()
+  assert.equal(actionRequests[actionRequests.length - 1], 'update')
+  assert.equal(stateRequests.length, beforeBoard + 1, 'a changed board is re-read once')
+  assert.equal(metaRequests.length, beforeMeta + 1, 'a changed meta is refreshed once')
+  assert.ok(metaRequests[metaRequests.length - 1].indexOf('refresh=1') > 0, 'the action refresh bypasses the host cache: ' + metaRequests[metaRequests.length - 1])
+  assert.equal(preciseStore.domains.detail.stateOf('T-1').status, 'stale', 'the affected card detail is invalidated')
+  await preciseStore.loadDetail('T-1')
+  assert.equal(preciseStore.domains.detail.stateOf('T-1').status, 'ready', 'the invalidated card is re-read on the next open')
+  console.log('PASS  T-233 a write invalidates exactly the domains it says changed')
+}
+
+// ── T-233: 20 project switches never paint an old board or old metadata ─────
+{
+  const stateResolvers = []
+  const metaCalls = []
+  const light = (project) => ({ ok: true, full: true, project: project, projectRoot: project, resolvedFrom: 'panel', counts: { total: 1 }, tasks: [{ id: 'T-1', status: 'pending', title: 'card of ' + project, updatedAt: 'v1' }], metadata: { split: true, light: true, deferred: [] } })
+  const metaFor = (project) => ({ ok: true, project: project, meta: { scope: { light: false }, agentTree: { available: true, root: { id: 's', name: 'lead of ' + project }, members: [], count: 0, error: null } }, errors: {}, metadata: { split: true, deferred: [] } })
+  function projectOf(text) {
+    const match = /[?&]project=([^&]+)/.exec(text)
+    return match === null ? null : decodeURIComponent(match[1])
+  }
+  globalThis.fetch = (url, options) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      return new Promise((resolve) => {
+        stateResolvers.push((project) => resolve({ json: async () => light(project) }))
+      })
+    }
+    if (text.indexOf('/meta') === 0) {
+      metaCalls.push(text)
+      return { json: async () => metaFor(projectOf(text)) }
+    }
+    if (text.indexOf('/action') === 0) {
+      const body = JSON.parse(options.body)
+      return { json: async () => ({ ok: true, snapshot: light(body.path) }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  let pinned = null
+  const pinDeps = Object.assign({}, deps, {
+    tcPinnedProject: function () { return pinned },
+    tcPinProject: function (value) { pinned = typeof value === 'string' && value !== '' ? value : null },
+  })
+  const pinStore = createTaskStore((key) => key, pinDeps)
+  void pinStore.load()
+  for (let index = 0; index < 20; index += 1) {
+    await pinStore.switchProject('/p' + String(index))
+    void pinStore.load()
+  }
+  // The delayed answers arrive in REVERSE order: the newest one first, then every
+  // older one. Only the newest project may survive.
+  for (let index = 19; index >= 0; index -= 1) {
+    const resolver = stateResolvers[stateResolvers.length - 1]
+    stateResolvers.pop()
+    resolver('/p' + String(index))
+  }
+  stateResolvers.forEach((resolve) => resolve('/stale-session'))
+  await tick()
+  const settled = pinStore.getSnapshot()
+  assert.equal(settled.project, '/p19', 'the newest switch owns the board')
+  assert.ok(settled.tasks.every((task) => task.title === 'card of /p19'), 'no old board landed: ' + JSON.stringify(settled.tasks))
+  assert.equal(settled.agentTree.root.name, 'lead of /p19', 'no old metadata landed: ' + JSON.stringify(settled.agentTree))
+  assert.equal(JSON.stringify(settled).indexOf('/p18'), -1, 'nothing of an earlier project survives')
+  assert.equal(pinStore.domains.detail.entries().length, 0)
+  assert.ok(metaCalls.length >= 20, 'every switch asked for its own metadata: ' + metaCalls.length)
+  console.log('PASS  T-233 20 project switches never paint an old board or old metadata')
 }
 
 const poll = globalThis.setInterval
