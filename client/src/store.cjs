@@ -588,6 +588,39 @@
 			}
 
 			/**
+			 * T-234: the agents half of the metadata domain (/meta -> meta.agentTree).
+			 *
+			 * A sidebar tab needs the LIVE agent tree, not the board. Asking the meta
+			 * domain keeps the tab's 5 s cadence from becoming a request every 5 s: its
+			 * own single flight and 10 s staleTime answer a duplicate call from the
+			 * cache. A shell that never advertised the split has no /meta, so the tab
+			 * falls back to the tree the board snapshot carries.
+			 */
+			async function ensureAgents() {
+				if (metaSupported !== true) return null
+				if (currentProject() === null) return null
+				return loadMeta()
+			}
+
+			/**
+			 * T-234: the agents block a view renders from — the last GOOD tree, never a
+			 * fabricated one. No project, no answer yet or a project switch all read as
+			 * an empty block, so the previous project's agents can never be replayed.
+			 */
+			function agentsView() {
+				const state = metaDomain.state()
+				const project = currentProject()
+				const matches = project !== null && state.scope !== null && state.scope === projectKeyOf(project)
+				const meta = matches && state.data !== null ? state.data : null
+				return {
+					agentTree: meta !== null && meta.agentTree !== undefined && meta.agentTree !== null ? meta.agentTree : null,
+					status: matches ? metaViewStatus(state) : 'idle',
+					error: matches && state.error !== null && state.error !== undefined ? state.error : null,
+					receivedAt: matches && state.receivedAt !== 0 ? state.receivedAt : null,
+				}
+			}
+
+			/**
 			 * T-233: one board poll.
 			 *
 			 * /state?light=1 is the light first paint AND the routine poll. Requests
@@ -979,21 +1012,16 @@
 				}
 			}
 
-			/**
-			 * T-233: fetch one card's full detail on demand (drawer/form open).
-			 *
-			 * The detail domain caches per card and keyed by the summary's updatedAt:
-			 * a poll that did not change the card never refetches, a changed card does.
-			 * A failed /task keeps the last good detail; it never blanks the card.
-			 */
-			async function loadDetail(id) {
-				if (typeof id !== 'string' || id === '') return null
+			/** The board summary of one card, or undefined (not on the board / no board). */
+			function summaryOf(id) {
 				const summaries = boardData().tasks
-				const summary = Array.isArray(summaries) ? summaries.filter(function (task) { return task !== null && task.id === id })[0] : undefined
-				if (summary === undefined) return null
-				if (detailDomain.needs(id, summary) !== true) return null
+				return Array.isArray(summaries) ? summaries.filter(function (task) { return task !== null && task !== undefined && task.id === id })[0] : undefined
+			}
+
+			/** One /task request for a card: single flight per card, generation-safe. */
+			function requestDetail(id, summary) {
 				if (detailFlights.has(id)) return detailFlights.get(id)
-				const token = detailDomain.begin(id, summary.updatedAt)
+				const token = detailDomain.begin(id, summary === undefined || summary === null ? null : summary.updatedAt)
 				const request = (async function () {
 					try {
 						const project = tcPinnedProject()
@@ -1014,6 +1042,59 @@
 				})()
 				detailFlights.set(id, request)
 				return request
+			}
+
+			/**
+			 * T-233: fetch one card's full detail on demand (drawer/form open).
+			 *
+			 * The detail domain caches per card and keyed by the summary's updatedAt:
+			 * a poll that did not change the card never refetches, a changed card does.
+			 * A failed /task keeps the last good detail; it never blanks the card. Only a
+			 * card the board already shows is read here — the sidebar tab uses
+			 * ensureTaskDetail(), which does not need the summary.
+			 */
+			async function loadDetail(id) {
+				if (typeof id !== 'string' || id === '') return null
+				const summary = summaryOf(id)
+				if (summary === undefined) return null
+				if (detailDomain.needs(id, summary) !== true) return null
+				return requestDetail(id, summary)
+			}
+
+			/**
+			 * T-234: the sidebar tab's unit of work — ONE card's detail read.
+			 *
+			 * This is a POLLER, so every call reads: the tab can be mounted while
+			 * nothing polls the board at all (the user is on the agent's conversation),
+			 * and a summary that never moves would otherwise gate out the very change
+			 * the tab exists to show. The per-card single flight still collapses a tick
+			 * that overlaps an in-flight read, and the summary, when there is one, is
+			 * recorded on the entry so loadDetail()/compose() can compare it. A failed
+			 * /task keeps the last good answer; a project switch clears it.
+			 */
+			async function ensureTaskDetail(id) {
+				const key = typeof id === 'string' ? id.trim() : ''
+				if (key === '') return null
+				return requestDetail(key, summaryOf(key))
+			}
+
+			/**
+			 * T-234: the card's detail as a view reads it — the last GOOD answer (a
+			 * failed refresh keeps it), the request status, and never a fabricated
+			 * card. A project switch clears the domain, so this is empty again.
+			 */
+			function getTaskDetail(id) {
+				const key = typeof id === 'string' ? id.trim() : ''
+				if (key === '') return null
+				const entry = detailDomain.stateOf(key)
+				if (entry === null) return null
+				return {
+					id: key,
+					task: entry.data === null ? null : entry.data.task,
+					status: entry.status,
+					error: entry.error === undefined ? null : entry.error,
+					receivedAt: entry.receivedAt,
+				}
 			}
 
 			/**
@@ -1157,6 +1238,12 @@
 				switchProject: switchProject,
 				listTasks: listTasks,
 				loadDetail: loadDetail,
+				// T-234: the per-card detail and the agents block, so the sidebar tab reads
+				// (and polls) ONE card instead of the whole board.
+				ensureTaskDetail: ensureTaskDetail,
+				getTaskDetail: getTaskDetail,
+				ensureAgents: ensureAgents,
+				agentsView: agentsView,
 				startPolling: startPolling,
 				stopPolling: stopPolling,
 			}

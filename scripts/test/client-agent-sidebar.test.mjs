@@ -13,6 +13,14 @@
 // conversation switch, the card's own session order, the role of the stage
 // behind it, exact taskId resolution, and no throw when the optional host
 // services are missing.
+//
+// T-234: the mounted tab reads ONE card, not the board. A real task store backs
+// the mount so the requests can be inspected: opening the tab asks /task?id plus
+// /meta and NEVER /state, the 5 s tick re-reads the card inside the meta TTL, a
+// review/test deliveredTo that lands in the detail reaches the stage rows, a
+// failed /task keeps the last good card, and a project switch clears it. A
+// hidden tab pauses, unmount clears only its own timer, and the sidebar never
+// calls store.load() nor starts/stops the panel's poll.
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -196,13 +204,16 @@ const helpers = {
 }
 
 // ── one card exactly as /state summarizes it ────────────────────────────────
-// T-225: the sidebar renders the /state SUMMARY, never /task. This fixture is
-// the shape summaryOf emits: no history / spec / acceptance / evidence, each
-// stage record reduced to status/by/byName/at/attempt/deliveredAt and the
-// compact deliveredTo ({ name, id }) the three stage rows resolve a real
-// reviewer/tester session from. Building the suite on THIS shape (the T-219
-// fixture used to be the detail shape) is what proves the sidebar reads what
-// the server really sends.
+// T-225: the board fixture is the /state SUMMARY. This is the shape summaryOf
+// emits: no history / spec / acceptance / evidence, each stage record reduced to
+// status/by/byName/at/attempt/deliveredAt and the compact deliveredTo ({ name,
+// id }) the three stage rows resolve a real reviewer/tester session from.
+// Building the suite on THIS shape (the T-219 fixture used to be the detail
+// shape) is what proves the tab reads what the server really sends.
+// T-234: the tab now prefers the card's /task DETAIL when the domain store has
+// one, with this summary as the fallback; the detail is derived from this same
+// fixture plus the fields only the detail carries (spec/history), so the two
+// shapes stay honest.
 const SUMMARY_TASK_KEYS = [
   'id', 'title', 'status', 'state', 'phase', 'blockedReason', 'kind', 'reportSummary',
   'ownerSession', 'priority', 'dependsOn', 'dependency', 'writeFileCount', 'verification', 'target', 'base',
@@ -1268,21 +1279,19 @@ guideDispose()
   }
 }
 
-// ── T-227: the tab syncs the shared snapshot itself ─────────────────────────
-// Before T-227 the body only subscribed to the store, so a tab opened before a
-// reviewer was delivered kept saying "not assigned" until another surface
-// polled. A mounted body now loads at mount and every 5 s while visible; hidden
-// pauses, unmount clears only its own timer (never store.stopPolling), and a
-// refreshed review.deliveredTo reaches the stage rows without reopening the
-// tab. Both REAL store failure shapes are driven after a good snapshot — the
-// offline/catch copy (project kept) and the payload branch (project null, from
-// the host error body) — and both must keep the last good card; neither may
-// replay it after a project switch.
+// ── T-234: the tab reads its CARD's detail, not the whole board ─────────────
+// T-227 made every mounted tab refresh the SHARED board through the store's
+// load(): a tab that only renders ONE card's review/test deliveredTo plus the
+// live agent tree pulled a /state light answer (and then had to find its taskId
+// in it) every 5 s. The tab now asks the domain store for exactly those two
+// things — ensureTaskDetail(taskId) and ensureAgents() — and renders from
+// getTaskDetail(taskId) / agentsView(). It never loads the board.
 {
   const realSetInterval = globalThis.setInterval
   const realClearInterval = globalThis.clearInterval
   const hadDocument = Object.prototype.hasOwnProperty.call(globalThis, 'document')
   const realDocument = hadDocument ? globalThis.document : undefined
+  const realFetch = globalThis.fetch
   const intervals = new Map()
   let nextInterval = 1
   globalThis.setInterval = (callback, ms) => {
@@ -1294,6 +1303,10 @@ guideDispose()
   globalThis.clearInterval = (id) => { intervals.delete(id) }
   const tick = () => {
     for (const entry of Array.from(intervals.values())) entry.callback()
+  }
+  const flush = async () => {
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
   }
 
   const visibilityListeners = new Set()
@@ -1312,216 +1325,422 @@ guideDispose()
     for (const listener of Array.from(visibilityListeners)) listener()
   }
 
-  function createSyncStore(initial) {
+  // The board card as /state summarizes it: neither stage record names a
+  // deliveredTo, so the tab starts with an unassigned review/test row.
+  const boardCard = Object.assign({}, task, {
+    review: Object.assign({}, task.review, { deliveredTo: null }),
+    test: Object.assign({}, task.test, { deliveredTo: null }),
+  })
+  const boardOf = (project, receivedAt, tasks) => ({
+    tasks: tasks === undefined ? [boardCard] : tasks,
+    agentTree: agentTree,
+    activityEvents: null,
+    source: 'host',
+    project: project,
+    receivedAt: receivedAt,
+  })
+  // The card's own /task DETAIL: the same card plus the stage delivery, spec and
+  // history fields only the detail carries.
+  const detailOf = (review, test) => Object.assign({}, task, {
+    spec: 'the detail-only spec',
+    history: [{ at: '2026-11-21T06:02:00.000Z', to: 'reviewing', note: 'submitted' }],
+    review: Object.assign({}, task.review, { deliveredTo: review === undefined ? null : review }),
+    test: Object.assign({}, task.test, { deliveredTo: test === undefined ? null : test }),
+  })
+
+  // A domain store: the tab's two requests, the two readers it renders from,
+  // and the board surface it must NOT use any more.
+  function createDomainStore(initial) {
     let current = initial
+    let agents = initial === null || initial === undefined ? null : initial.agentTree
+    let detail = null
     const subscribers = new Set()
-    const sync = { loads: 0, startPolling: 0, stopPolling: 0 }
+    const sync = { details: [], agents: 0, loads: 0, startPolling: 0, stopPolling: 0 }
+    function emit() {
+      for (const listener of Array.from(subscribers)) listener()
+    }
     return {
       sync,
-      load() {
-        sync.loads += 1
+      ensureTaskDetail(id) {
+        sync.details.push(id)
         return Promise.resolve({ ok: true })
+      },
+      ensureAgents() {
+        sync.agents += 1
+        return Promise.resolve({ ok: true })
+      },
+      getTaskDetail(id) {
+        return detail === null ? null : { id: id, task: detail.task, status: detail.status, error: null }
+      },
+      agentsView() {
+        return { agentTree: agents, status: 'ready', error: null, receivedAt: 1 }
       },
       getSnapshot() { return current },
       subscribe(listener) {
         subscribers.add(listener)
         return () => { subscribers.delete(listener) }
       },
+      // The shared-store surface the tab must NOT use any more.
+      load() {
+        sync.loads += 1
+        return Promise.resolve({ ok: true })
+      },
       startPolling() { sync.startPolling += 1 },
       stopPolling() { sync.stopPolling += 1 },
+      // Test drivers.
       push(next) {
         current = next
-        for (const listener of Array.from(subscribers)) listener()
+        emit()
+      },
+      deliverDetail(nextDetail, status) {
+        detail = { task: nextDetail, status: status === undefined ? 'ready' : status }
+        emit()
+      },
+      failDetail() {
+        if (detail === null) return
+        detail = { task: detail.task, status: 'error' }
+        emit()
+      },
+      clearDetail() {
+        detail = null
+        emit()
+      },
+      setAgents(next) {
+        agents = next
+        emit()
       },
     }
   }
 
-  // A settled /state answer: source 'host', a project and a receipt time, exactly
-  // the fields tcSnapshot/withDecisions write (client/src/15-client-state.part).
-  const goodSnapshot = (deliveredTo, project, receivedAt) => Object.assign({}, snapshot, {
-    source: 'host',
-    project: project,
-    receivedAt: receivedAt,
-    tasks: [Object.assign({}, task, { review: Object.assign({}, task.review, { deliveredTo }) })],
-  })
-  // The store's OFFLINE/CATCH failure branch (client/src/store.cjs): a copy of
-  // the last snapshot, so project and receivedAt are kept, tasks cleared.
-  const failureOf = (good, project) => Object.assign({}, good, {
-    ok: false,
-    source: 'error',
-    message: 'offline',
-    project: project,
-    tasks: [],
-  })
-  // The store's PAYLOAD failure branch (client/src/store.cjs): tcSnapshot is
-  // built from the host error body, which carries no project (routes.mjs), and
-  // tcSnapshot only keeps a STRING project — so this snapshot has project: null
-  // while receivedAt stays the failed answer's.
-  const payloadFailureOf = (good) => ({
-    ok: false,
-    source: 'error',
-    code: 'failed',
-    message: 'failed',
-    project: null,
-    projectRoot: null,
-    tasks: [],
-    agentTree: null,
-    activityEvents: null,
-    receivedAt: good.receivedAt,
-  })
-  const cardWithReviewer = (deliveredTo) => goodSnapshot(deliveredTo, 'D:/project-godot', 1000)
   const tabProps = { sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-212', 'session-w212') }
-  const mountSync = (syncStore) => {
+  const mountSync = (domainStore) => {
     const host = createHost()
     const view = createView()
-    const disposal = view.mount(host.host, { store: syncStore, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+    const disposal = view.mount(host.host, { store: domainStore, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
     return { host, view, disposal, body: mountBody(view.Body, tabProps) }
   }
 
   try {
-    // A visible tab refreshes once at mount and again on its 5 s timer; it never
-    // starts or stops the panel's own poll.
-    const visibleStore = createSyncStore(cardWithReviewer(null))
+    // A VISIBLE tab asks for ITS card detail and the agents block at mount and on
+    // every 5 s tick; it never loads the board and never touches the panel poll.
+    visibility = 'visible'
+    const visibleStore = createDomainStore(boardOf('D:/project-godot', 1000))
     const visible = mountSync(visibleStore)
-    assert.equal(visibleStore.sync.loads, 1, 'mounting a visible tab loads the snapshot immediately')
+    assert.deepEqual(visibleStore.sync.details, ['T-212'], 'mounting a visible tab asks for THIS card immediately')
+    assert.equal(visibleStore.sync.agents, 1, 'mounting also asks the agents domain')
+    assert.equal(visibleStore.sync.loads, 0, 'the tab never loads the board')
     assert.equal(visibleStore.sync.startPolling, 0, 'the tab does not start a global poll')
     assert.equal(visibleStore.sync.stopPolling, 0, 'mounting never stops the panel poll')
     tick()
-    assert.equal(visibleStore.sync.loads, 2, 'the visible tab refreshes again on the 5 s tick')
+    assert.deepEqual(visibleStore.sync.details, ['T-212', 'T-212'], 'the 5 s tick re-reads exactly this card')
+    assert.equal(visibleStore.sync.agents, 2, 'the 5 s tick also re-reads the agents block')
+    assert.equal(visibleStore.sync.loads, 0, 'the tick never loads the board either')
 
-    // The review row starts unassigned; a refreshed snapshot that carries
-    // review.deliveredTo re-renders the mounted body into the reviewer row.
+    // The board summary names no reviewer; only the DETAIL does. The deliveredTo
+    // reaches the review row without reopening the tab.
     const beforeRows = stageRowNodes(visible.body.node)
+    assert.equal(beforeRows.length, 3, 'the board summary renders the three stage rows')
     assert.equal(beforeRows[1].props['data-agent-stage-has-session'], 'false', 'the review row starts unassigned')
     assert.ok(JSON.stringify(beforeRows[1]).includes('未分配'), 'the unassigned review row says so')
-    visibleStore.push(goodSnapshot({ name: 'reviewer-t-212', id: 'session-rev212' }, 'D:/project-godot', 2000))
+    assert.equal(beforeRows[2].props['data-agent-stage-has-session'], 'false', 'the test row starts unassigned')
+    const detailOnly = { name: 'reviewer-detail-only', id: 'session-review-detail' }
+    visibleStore.deliverDetail(detailOf(detailOnly))
     const afterRows = stageRowNodes(visible.body.node)
-    assert.equal(afterRows[1].props['data-agent-stage-session'], 'session-rev212', 'a delivered reviewer reaches the review row without reopening the tab')
+    assert.equal(afterRows[1].props['data-agent-stage-session'], 'session-review-detail', 'a deliveredTo read from the DETAIL reaches the review row')
     assert.equal(afterRows[1].props['data-agent-stage-has-session'], 'true', 'the review row becomes actionable')
-    assert.ok(JSON.stringify(afterRows[1]).includes('reviewer-t-212'), 'the review row names the delivered reviewer')
+    assert.ok(JSON.stringify(afterRows[1]).includes('reviewer-detail-only'), 'the review row names the delivered reviewer')
     assert.equal(stageButtonOf(visible.body.node, 'review').props.disabled, false, 'the delivered review row can open its conversation')
+    assert.equal(visible.body.node.props['data-agent-task'], 'T-212', 'the detail keeps the exact card id')
+    assert.ok(JSON.stringify(visible.body.node).includes('提交'), 'the detail history feeds the latest activity')
+    // The title resolves the same DETAIL: this session is on no board tree.
+    const detailTitle = visible.view.Title({ sessionId: 'session-review-detail', useTabInfo: tabInfoWithAgent('T-212', 'session-review-detail') })
+    assert.ok(JSON.stringify(detailTitle).includes('reviewer-detail-only'), 'the title names a session only the DETAIL carries')
 
-    // Unmount clears the tab's own timer and listener, and touches no poller.
+    // The same detail reaches the TEST row once it names a tester.
+    visibleStore.deliverDetail(detailOf(detailOnly, { name: 'tester-detail-only', id: 'session-test-detail' }))
+    assert.equal(stageRowNodes(visible.body.node)[2].props['data-agent-stage-session'], 'session-test-detail', 'the test row reads test.deliveredTo from the detail')
+    assert.ok(JSON.stringify(stageRowNodes(visible.body.node)[2]).includes('tester-detail-only'), 'the test row names the delivered tester')
+
+    // A FAILED detail read keeps the last good card: every row, the delivered
+    // reviewer/tester and the task id stay on screen.
+    visibleStore.failDetail()
+    assert.equal(stageRowNodes(visible.body.node).length, 3, 'a failed detail keeps all three stage rows')
+    assert.equal(stageRowNodes(visible.body.node)[1].props['data-agent-stage-session'], 'session-review-detail', 'a failed detail keeps the delivered reviewer')
+    assert.equal(stageRowNodes(visible.body.node)[2].props['data-agent-stage-session'], 'session-test-detail', 'a failed detail keeps the delivered tester')
+    assert.equal(visible.body.node.props['data-agent-task'], 'T-212', 'a failed detail keeps the card id')
+
+    // The agents domain drives the live status: the board snapshot's tree says
+    // running, the domain says idle, and the tab follows the DOMAIN.
+    const idleTree = {
+      available: true,
+      root: agentTree.root,
+      members: agentTree.members.map((member) => Object.assign({}, member, { status: member.id === 'session-w212' ? 'idle' : member.status })),
+      count: agentTree.count,
+      error: null,
+    }
+    visibleStore.setAgents(idleTree)
+    assert.ok(JSON.stringify(visible.body.node).includes('空闲'), 'the agents domain supplies the live status')
+    visibleStore.setAgents(agentTree)
+    assert.ok(JSON.stringify(visible.body.node).includes('运行中'), 'restoring the tree restores the running status')
+
+    // The last good BOARD survives a failed poll in the legacy snapshot path
+    // (the tab has no detail yet, e.g. the guide overview): both real store
+    // failure shapes keep the card, and another project's failure never replays it.
+    const boardSnapshot = boardOf('D:/project-godot', 1000)
+    const failureOf = (good, project) => Object.assign({}, good, { ok: false, source: 'error', message: 'offline', project: project, tasks: [] })
+    const payloadFailureOf = (good) => ({
+      ok: false,
+      source: 'error',
+      code: 'failed',
+      message: 'failed',
+      project: null,
+      projectRoot: null,
+      tasks: [],
+      agentTree: null,
+      activityEvents: null,
+      receivedAt: good.receivedAt,
+    })
+    const failureStore = createDomainStore(boardSnapshot)
+    const failureTab = mountSync(failureStore)
+    assert.equal(stageRowNodes(failureTab.body.node).length, 3, 'the good board renders the three stage rows')
+    // The offline/catch branch: a copy of the last snapshot, project kept, tasks cleared.
+    failureStore.push(failureOf(boardSnapshot, 'D:/project-godot'))
+    assert.equal(failureTab.body.node.props['data-agent-task'], 'T-212', 'a failed poll keeps the tab card id')
+    assert.equal(stageRowNodes(failureTab.body.node).length, 3, 'a failed poll keeps all three stage rows')
+    // A failure for a DIFFERENT project never replays the cached card.
+    failureStore.push(failureOf(boardSnapshot, 'D:/another-project'))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a different project never falls back to the old project card')
+    assert.ok(JSON.stringify(failureTab.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
+    // A switch transient (new project id, old board kept, same receipt time) must
+    // invalidate the cached card, or a later PROJECT-LESS payload failure would
+    // replay the previous project's card.
+    failureStore.push(Object.assign({}, boardSnapshot, { project: 'D:/third-project' }))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 3, 'the store switch transient still renders its board')
+    failureStore.push(payloadFailureOf(boardSnapshot))
+    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a switch transient cannot seed the last-good cache')
+    failureTab.body.unmount()
+    failureTab.disposal()
+
+    // A project switch clears the domains: no card, no stage rows, and no
+    // session is minted for a card that is not there.
+    visibleStore.clearDetail()
+    visibleStore.push(boardOf('D:/another-project', 2000, []))
+    assert.equal(stageRowNodes(visible.body.node).length, 0, 'a switched project drops the previous card rows')
+    assert.ok(JSON.stringify(visible.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
+
+    // Unmount clears the tab's timer and listener and touches no poller.
     visible.body.unmount()
     visible.disposal()
     tick()
-    assert.equal(visibleStore.sync.loads, 2, 'an unmounted tab never refreshes again')
+    assert.deepEqual(visibleStore.sync.details, ['T-212', 'T-212'], 'an unmounted tab never asks for the card again')
+    assert.equal(visibleStore.sync.agents, 2, 'an unmounted tab never asks for the agents again')
     assert.equal(visibleStore.sync.stopPolling, 0, 'unmount never stops the panel poll')
     assert.equal(visibleStore.sync.startPolling, 0, 'unmount never starts another poll')
     assert.equal(intervals.size, 0, 'unmount clears every timer the tab created')
     assert.equal(visibilityListeners.size, 0, 'unmount removes the visibility listener')
 
-    // A hidden tab pauses: no load at mount, no load on the tick. Becoming
+    // A hidden tab pauses: no request at mount and none on the tick; becoming
     // visible catches up at once and resumes the 5 s interval.
     visibility = 'hidden'
-    const hiddenStore = createSyncStore(cardWithReviewer(null))
+    const hiddenStore = createDomainStore(boardOf('D:/project-godot', 1000))
     const hidden = mountSync(hiddenStore)
-    assert.equal(hiddenStore.sync.loads, 0, 'a hidden tab does not load at mount')
+    assert.deepEqual(hiddenStore.sync.details, [], 'a hidden tab asks for nothing at mount')
+    assert.equal(hiddenStore.sync.agents, 0, 'a hidden tab asks for no agents at mount')
     tick()
-    assert.equal(hiddenStore.sync.loads, 0, 'a hidden tab does not load on the tick')
+    assert.deepEqual(hiddenStore.sync.details, [], 'a hidden tab asks for nothing on the tick')
+    assert.equal(hiddenStore.sync.agents, 0, 'a hidden tab asks for no agents on the tick')
     setVisibility('visible')
-    assert.equal(hiddenStore.sync.loads, 1, 'becoming visible refreshes immediately')
+    assert.deepEqual(hiddenStore.sync.details, ['T-212'], 'becoming visible asks for the card immediately')
+    assert.equal(hiddenStore.sync.agents, 1, 'becoming visible asks for the agents immediately')
     tick()
-    assert.equal(hiddenStore.sync.loads, 2, 'the resumed interval refreshes again')
+    assert.deepEqual(hiddenStore.sync.details, ['T-212', 'T-212'], 'the resumed interval asks again')
     setVisibility('hidden')
     tick()
-    assert.equal(hiddenStore.sync.loads, 2, 'hiding the document pauses the tab again')
+    assert.deepEqual(hiddenStore.sync.details, ['T-212', 'T-212'], 'hiding the document pauses the tab again')
     hidden.body.unmount()
     hidden.disposal()
     assert.equal(intervals.size, 0, 'the hidden tab also releases its timer on unmount')
 
-    // The store's OFFLINE/CATCH failure shape must not blank the tab: a failed
-    // poll after a good one keeps the card, the reviewer and all three rows.
+    // A store WITHOUT the domains is never polled through load(): the tab
+    // degrades to the snapshot it was handed instead of pulling a board answer.
     visibility = 'visible'
-    const deliveredSnapshot = goodSnapshot({ name: 'reviewer-t-212', id: 'session-rev212' }, 'D:/project-godot', 1000)
-    const failureStore = createSyncStore(deliveredSnapshot)
-    const failureTab = mountSync(failureStore)
-    const goodRows = stageRowNodes(failureTab.body.node)
-    assert.equal(goodRows.length, 3, 'the good snapshot renders the three stage rows')
-    assert.equal(goodRows[1].props['data-agent-stage-session'], 'session-rev212', 'the good snapshot names the reviewer')
-    failureStore.push(failureOf(deliveredSnapshot, 'D:/project-godot'))
-    assert.equal(failureTab.body.node.props['data-agent-task'], 'T-212', 'a failed poll keeps the tab card id')
-    assert.equal(failureTab.body.node.props['data-agent-role'], 'worker', 'a failed poll keeps the tab role')
-    const keptRows = stageRowNodes(failureTab.body.node)
-    assert.equal(keptRows.length, 3, 'a failed poll keeps all three stage rows')
-    assert.equal(keptRows[1].props['data-agent-stage-session'], 'session-rev212', 'a failed poll keeps the delivered reviewer')
-    assert.ok(JSON.stringify(failureTab.body.node).includes('reviewer-t-212'), 'a failed poll keeps the reviewer name')
-    assert.equal(stageButtonOf(failureTab.body.node, 'review').props.disabled, false, 'a failed poll keeps the review conversation actionable')
-
-    // A failure for a DIFFERENT project must not replay the cached card: the
-    // project switch guard (the previous project's rows may never come back).
-    failureStore.push(failureOf(deliveredSnapshot, 'D:/another-project'))
-    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a different project never falls back to the old project card')
-    assert.ok(JSON.stringify(failureTab.body.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
-
-    // A switch-shaped snapshot (new project id, old board kept, unchanged
-    // receivedAt) must invalidate the cached card, or a later PROJECT-LESS
-    // payload failure for the new project would replay the previous project's
-    // card through the "unknown project may fall back" path.
-    failureStore.push(Object.assign({}, deliveredSnapshot, { project: 'D:/third-project' }))
-    assert.equal(stageRowNodes(failureTab.body.node).length, 3, 'the store switch transient still renders its board')
-    failureStore.push(payloadFailureOf(deliveredSnapshot))
-    assert.equal(stageRowNodes(failureTab.body.node).length, 0, 'a switch transient cannot seed the last-good cache')
-    failureTab.body.unmount()
-    failureTab.disposal()
-
-    // The OTHER real failure branch: the /state PAYLOAD failure. The host error
-    // body has no project and tcSnapshot keeps only a string project, so this
-    // snapshot has project: null (receivedAt unchanged, tasks cleared). The last
-    // good card must survive this shape as well.
-    const payloadFailure = payloadFailureOf(deliveredSnapshot)
-    assert.equal(payloadFailure.source, 'error')
-    assert.equal(payloadFailure.project, null, 'the payload failure snapshot has no project')
-    assert.equal(payloadFailure.tasks.length, 0)
-    assert.equal(payloadFailure.receivedAt, deliveredSnapshot.receivedAt, 'the payload failure keeps the previous receipt time')
-    const payloadStore = createSyncStore(deliveredSnapshot)
-    const payloadTab = mountSync(payloadStore)
-    payloadStore.push(payloadFailure)
-    assert.equal(payloadTab.body.node.props['data-agent-task'], 'T-212', 'a payload-branch failure keeps the tab card id')
-    assert.equal(payloadTab.body.node.props['data-agent-role'], 'worker', 'a payload-branch failure keeps the tab role')
-    const payloadRows = stageRowNodes(payloadTab.body.node)
-    assert.equal(payloadRows.length, 3, 'a payload-branch failure keeps all three stage rows')
-    assert.equal(payloadRows[1].props['data-agent-stage-session'], 'session-rev212', 'a payload-branch failure keeps the delivered reviewer')
-    assert.ok(JSON.stringify(payloadTab.body.node).includes('reviewer-t-212'), 'a payload-branch failure keeps the reviewer name')
-    assert.equal(stageButtonOf(payloadTab.body.node, 'review').props.disabled, false, 'a payload-branch failure keeps the review conversation actionable')
-    payloadTab.body.unmount()
-    payloadTab.disposal()
-
-    // The load call itself never escapes: a throwing load is caught and a
-    // rejected load never becomes an unhandled rejection. These stores keep a
-    // good snapshot, so this proves error containment, not snapshot retention
-    // (retention is proven above with the real failure shape).
-    const throwingStore = {
-      load() { throw new Error('offline') },
-      getSnapshot() { return deliveredSnapshot },
+    const legacySync = { loads: 0 }
+    const legacy = mountSync({
+      getSnapshot() { return boardOf('D:/project-godot', 1000) },
       subscribe() { return () => {} },
-    }
-    const throwing = mountSync(throwingStore)
-    assert.doesNotThrow(() => tick(), 'a throwing refresh never escapes the timer')
-    assert.equal(stageRowNodes(throwing.body.node).length, 3, 'a throwing load leaves the rendered snapshot intact')
+      load() {
+        legacySync.loads += 1
+        return Promise.resolve({ ok: true })
+      },
+    })
+    assert.equal(legacySync.loads, 0, 'a legacy store is not asked to load the board')
+    tick()
+    assert.equal(legacySync.loads, 0, 'not even on the tick')
+    assert.equal(legacy.body.node.props['data-agent-task'], 'T-212', 'the legacy store still renders its snapshot card')
+    legacy.body.unmount()
+    legacy.disposal()
+
+    // A throwing / rejecting domain call never escapes the timer, and the last
+    // rendered card stays on screen.
+    const throwing = mountSync({
+      ensureTaskDetail() { throw new Error('offline') },
+      ensureAgents() { throw new Error('offline') },
+      getTaskDetail() { return { id: 'T-212', task: detailOf({ name: 'reviewer-t-212', id: 'session-rev212' }), status: 'ready' } },
+      getSnapshot() { return boardOf('D:/project-godot', 1000) },
+      subscribe() { return () => {} },
+    })
+    assert.doesNotThrow(() => tick(), 'a throwing ensure never escapes the timer')
+    assert.equal(stageRowNodes(throwing.body.node)[1].props['data-agent-stage-session'], 'session-rev212', 'a throwing ensure leaves the rendered card intact')
     throwing.body.unmount()
     throwing.disposal()
 
-    let rejectedLoads = 0
-    const rejectingStore = {
-      load() {
-        rejectedLoads += 1
-        return Promise.reject(new Error('offline'))
-      },
-      getSnapshot() { return deliveredSnapshot },
+    const rejecting = mountSync({
+      ensureTaskDetail() { return Promise.reject(new Error('offline')) },
+      ensureAgents() { return Promise.reject(new Error('offline')) },
+      getTaskDetail() { return null },
+      getSnapshot() { return boardOf('D:/project-godot', 1000) },
       subscribe() { return () => {} },
-    }
-    const rejecting = mountSync(rejectingStore)
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(rejectedLoads, 1, 'the rejecting load was attempted')
-    assert.equal(stageRowNodes(rejecting.body.node).length, 3, 'a rejected load leaves the rendered snapshot intact')
+    })
+    await flush()
+    assert.equal(stageRowNodes(rejecting.body.node).length, 3, 'a rejected ensure leaves the board summary rows intact')
     rejecting.body.unmount()
     rejecting.disposal()
+
+    // ── the REAL domain store: /task + /meta only, never /state ────────────
+    {
+      const { createTaskStore } = require('../../client/src/store.cjs')
+      const requests = []
+      let now = 1000000
+      let project = '/repo'
+      let boardTasks = [boardCard]
+      let detailCard = detailOf(null)
+      let taskFailing = false
+      const deps = {
+        TC_STATE_URL: '/state',
+        TC_WORKTREES_URL: '/worktrees',
+        TC_TASK_URL: '/task',
+        TC_LIST_URL: '/list',
+        TC_ACTION_URL: '/action',
+        tcSnapshot: (payload, source, message) => ({
+          ok: payload.ok === true,
+          project: payload.project === undefined ? null : payload.project,
+          source: source,
+          message: message,
+          tasks: Array.isArray(payload.tasks) ? payload.tasks : [],
+          counts: payload.counts === undefined ? {} : payload.counts,
+          details: {},
+          seq: null,
+          activityEvents: null,
+          actionResult: null,
+          actionError: null,
+        }),
+        tcPinnedProject: () => null,
+        tcMergeSnapshot: (previous, payload) => Object.assign({}, previous, payload, { source: 'host' }),
+        tcErrorMessage: (payload, t) => 'error:' + t('x'),
+        tcWithSession: (url) => url,
+        tcSessionId: () => 'session-test',
+        tcPinProject: () => {},
+        tcNow: () => now,
+      }
+      globalThis.fetch = async (url) => {
+        const text = String(url)
+        requests.push(text)
+        if (text.indexOf('/state') === 0) {
+          return {
+            json: async () => ({
+              ok: true,
+              full: true,
+              project: project,
+              projectRoot: project,
+              resolvedFrom: 'panel',
+              counts: { total: boardTasks.length },
+              tasks: boardTasks,
+              metadata: { split: true, light: true, deferred: [] },
+            }),
+          }
+        }
+        if (text.indexOf('/meta') === 0) {
+          return {
+            json: async () => ({
+              ok: true,
+              project: project,
+              meta: { scope: { light: false }, agentTree: agentTree },
+              errors: {},
+              metadata: { split: true, deferred: [] },
+            }),
+          }
+        }
+        if (text.indexOf('/task') === 0) {
+          if (taskFailing) return { json: async () => ({ ok: false, code: 'failed', message: 'detail read failed' }) }
+          return { json: async () => ({ ok: true, task: detailCard }) }
+        }
+        throw new Error('unexpected request: ' + text)
+      }
+      const realStore = createTaskStore((key) => key, deps)
+      // The panel's own first paint (the tab is opened from that board).
+      await realStore.load()
+      await flush()
+      assert.equal(realStore.getSnapshot().project, '/repo')
+
+      requests.length = 0
+      now += 11000
+      const domainHost = createHost()
+      const realView = createView()
+      const realDispose = realView.mount(domainHost.host, { store: realStore, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+      const realBody = mountBody(realView.Body, tabProps)
+      await flush()
+      assert.deepEqual(requests.filter((url) => url.indexOf('/state') === 0), [], 'opening the tab requests no /state: ' + JSON.stringify(requests))
+      assert.equal(requests.filter((url) => url.indexOf('/task?id=T-212') === 0).length, 1, 'opening the tab reads exactly its card detail: ' + JSON.stringify(requests))
+      assert.equal(requests.filter((url) => url.indexOf('/meta') === 0).length, 1, 'opening the tab reads the agents block from /meta: ' + JSON.stringify(requests))
+      const realRows = stageRowNodes(realBody.node)
+      assert.equal(realRows.length, 3, 'the real detail renders the three stage rows')
+      assert.equal(realRows[1].props['data-agent-stage-has-session'], 'false', 'the detail starts with an unassigned review row')
+      assert.equal(realBody.node.props['data-agent-role'], 'worker', 'the detail card classifies the agent')
+
+      // A 5 s tick re-reads the card (the delivered reviewer reaches the row) but
+      // leaves /meta alone inside its 10 s staleTime.
+      detailCard = detailOf({ name: 'reviewer-t-212', id: 'session-rev212' })
+      let mark = requests.length
+      now += 5000
+      tick()
+      await flush()
+      const ticked = requests.slice(mark)
+      assert.equal(ticked.filter((url) => url.indexOf('/state') === 0).length, 0, 'the tick requests no /state: ' + JSON.stringify(ticked))
+      assert.equal(ticked.filter((url) => url.indexOf('/task?id=T-212') === 0).length, 1, 'the tick re-reads the card detail: ' + JSON.stringify(ticked))
+      assert.equal(ticked.filter((url) => url.indexOf('/meta') === 0).length, 0, 'the tick is answered by the meta domain inside 10 s: ' + JSON.stringify(ticked))
+      assert.equal(stageRowNodes(realBody.node)[1].props['data-agent-stage-session'], 'session-rev212', 'the delivered reviewer reaches the row from the real /task answer')
+
+      // A failed /task keeps the last good detail on screen.
+      taskFailing = true
+      mark = requests.length
+      now += 5000
+      tick()
+      await flush()
+      assert.equal(requests.slice(mark).filter((url) => url.indexOf('/task?id=T-212') === 0).length, 1, 'the failed tick still tried the detail')
+      assert.equal(stageRowNodes(realBody.node)[1].props['data-agent-stage-session'], 'session-rev212', 'a failed /task keeps the last good reviewer')
+      assert.equal(realBody.node.props['data-agent-task'], 'T-212', 'a failed /task keeps the card id')
+
+      // A real project switch clears the detail and the agents domain: the tab
+      // shows no borrowed card.
+      taskFailing = false
+      project = '/repo-b'
+      boardTasks = []
+      now += 5000
+      await realStore.load()
+      await flush()
+      assert.equal(realStore.getTaskDetail('T-212'), null, 'the project switch clears the card detail')
+      assert.equal(stageRowNodes(realBody.node).length, 0, 'the switched project shows no stage rows')
+      assert.ok(JSON.stringify(realBody.node).includes('没有关联任务'), 'the switched project shows no borrowed card')
+      realBody.unmount()
+      realDispose()
+    }
   } finally {
     globalThis.setInterval = realSetInterval
     globalThis.clearInterval = realClearInterval
     if (hadDocument === true) globalThis.document = realDocument
     else delete globalThis.document
+    if (realFetch === undefined) delete globalThis.fetch
+    else globalThis.fetch = realFetch
   }
 }
 
@@ -1544,17 +1763,27 @@ assert.ok(BUNDLE.includes('hostSessionOf'), 'the shipped bundle resolves the hos
 assert.ok(BUNDLE.includes('switchToHost(hostSession)'), 'the shipped bundle switches the main view after a verified open')
 assert.ok(BUNDLE.includes('createdTabOf(before, after)'), 'the shipped bundle verifies a NEW tab, not just the kind')
 assert.ok(BUNDLE.includes('AGENT_TAB_SYNC_MS = 5000'), 'the shipped bundle carries the tab 5 s sync interval')
-assert.ok(BUNDLE.includes('useTabSync'), 'the shipped bundle refreshes the tab snapshot itself')
+assert.ok(BUNDLE.includes('useTabSync'), 'the shipped bundle refreshes the tab domains itself')
 assert.ok(BUNDLE.includes('visibilitychange'), 'the shipped bundle follows the document visibility')
 assert.ok(BUNDLE.includes('useStableSnapshot'), 'the shipped bundle keeps the last good snapshot through a failed poll')
 assert.ok(BUNDLE.includes('failedSnapshotOf'), 'the shipped bundle recognises the store failure shape')
 assert.ok(BUNDLE.includes('cache.receivedAt = snapshot.receivedAt'), 'the shipped bundle tracks the snapshot generation for the fallback')
+assert.ok(BUNDLE.includes('ensureTaskDetail'), 'the shipped bundle carries the per-card detail request')
+assert.ok(BUNDLE.includes('getTaskDetail'), 'the shipped bundle carries the per-card detail reader')
+assert.ok(BUNDLE.includes('ensureAgents'), 'the shipped bundle carries the agents-domain request')
+assert.ok(BUNDLE.includes('agentsView'), 'the shipped bundle carries the agents view')
 
-// T-227: the tab owns only its refresh timer; the panel's poll is not its to
-// start or stop, and the sidebar module never calls either method.
+// T-227/T-234: the tab owns only its own refresh timer; the panel's poll is not
+// its to start or stop, and the sidebar module never calls either method.
 const AGENT_SIDEBAR_SOURCE = readFileSync(new URL('../../client/src/views/agent-sidebar.cjs', import.meta.url), 'utf8')
 assert.equal(AGENT_SIDEBAR_SOURCE.includes('.stopPolling('), false, 'the agent tab never CALLS stopPolling')
 assert.equal(AGENT_SIDEBAR_SOURCE.includes('.startPolling('), false, 'the agent tab never CALLS startPolling')
-assert.ok(AGENT_SIDEBAR_SOURCE.includes('store.load'), 'the agent tab refreshes through the shared store load')
+// T-234: the tab polls the domain store for ITS card and the agents block, and
+// never pulls the whole board through the store load.
+assert.equal(AGENT_SIDEBAR_SOURCE.includes('store.load'), false, 'the agent tab never loads the board')
+assert.ok(AGENT_SIDEBAR_SOURCE.includes('ensureTaskDetail'), 'the agent tab asks the detail domain for its card')
+assert.ok(AGENT_SIDEBAR_SOURCE.includes('ensureAgents'), 'the agent tab asks the agents domain for the tree')
+assert.ok(AGENT_SIDEBAR_SOURCE.includes('getTaskDetail'), 'the agent tab renders its card from the detail domain')
+assert.ok(AGENT_SIDEBAR_SOURCE.includes('agentsView'), 'the agent tab renders the agents domain')
 
-console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), refreshes the shared snapshot on mount and every 5 s while visible without touching the panel poll (hidden pauses, unmount clears, a delivered reviewer reaches the stage rows, and both real failed-poll shapes (offline copy and project-less payload) keep the last good card while a project switch never replays it), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), and reads ONLY its card detail plus the agents domain (a real store serves the open with /task + /meta and no /state, the 5 s tick re-reads the card inside the meta TTL, a deliveredTo reaches the review/test rows, a failed detail keeps the last good card, a project switch clears it, hidden pauses, unmount clears, and the panel poll is never started or stopped), switches to the host conversation (and says the subagent switch takes the sidebar with it), keeps the last good board through a failed poll in the legacy snapshot path, and degrades safely')

@@ -4185,6 +4185,39 @@ const createTaskStore = (function () {
 			}
 
 			/**
+			 * T-234: the agents half of the metadata domain (/meta -> meta.agentTree).
+			 *
+			 * A sidebar tab needs the LIVE agent tree, not the board. Asking the meta
+			 * domain keeps the tab's 5 s cadence from becoming a request every 5 s: its
+			 * own single flight and 10 s staleTime answer a duplicate call from the
+			 * cache. A shell that never advertised the split has no /meta, so the tab
+			 * falls back to the tree the board snapshot carries.
+			 */
+			async function ensureAgents() {
+				if (metaSupported !== true) return null
+				if (currentProject() === null) return null
+				return loadMeta()
+			}
+
+			/**
+			 * T-234: the agents block a view renders from — the last GOOD tree, never a
+			 * fabricated one. No project, no answer yet or a project switch all read as
+			 * an empty block, so the previous project's agents can never be replayed.
+			 */
+			function agentsView() {
+				const state = metaDomain.state()
+				const project = currentProject()
+				const matches = project !== null && state.scope !== null && state.scope === projectKeyOf(project)
+				const meta = matches && state.data !== null ? state.data : null
+				return {
+					agentTree: meta !== null && meta.agentTree !== undefined && meta.agentTree !== null ? meta.agentTree : null,
+					status: matches ? metaViewStatus(state) : 'idle',
+					error: matches && state.error !== null && state.error !== undefined ? state.error : null,
+					receivedAt: matches && state.receivedAt !== 0 ? state.receivedAt : null,
+				}
+			}
+
+			/**
 			 * T-233: one board poll.
 			 *
 			 * /state?light=1 is the light first paint AND the routine poll. Requests
@@ -4576,21 +4609,16 @@ const createTaskStore = (function () {
 				}
 			}
 
-			/**
-			 * T-233: fetch one card's full detail on demand (drawer/form open).
-			 *
-			 * The detail domain caches per card and keyed by the summary's updatedAt:
-			 * a poll that did not change the card never refetches, a changed card does.
-			 * A failed /task keeps the last good detail; it never blanks the card.
-			 */
-			async function loadDetail(id) {
-				if (typeof id !== 'string' || id === '') return null
+			/** The board summary of one card, or undefined (not on the board / no board). */
+			function summaryOf(id) {
 				const summaries = boardData().tasks
-				const summary = Array.isArray(summaries) ? summaries.filter(function (task) { return task !== null && task.id === id })[0] : undefined
-				if (summary === undefined) return null
-				if (detailDomain.needs(id, summary) !== true) return null
+				return Array.isArray(summaries) ? summaries.filter(function (task) { return task !== null && task !== undefined && task.id === id })[0] : undefined
+			}
+
+			/** One /task request for a card: single flight per card, generation-safe. */
+			function requestDetail(id, summary) {
 				if (detailFlights.has(id)) return detailFlights.get(id)
-				const token = detailDomain.begin(id, summary.updatedAt)
+				const token = detailDomain.begin(id, summary === undefined || summary === null ? null : summary.updatedAt)
 				const request = (async function () {
 					try {
 						const project = tcPinnedProject()
@@ -4611,6 +4639,59 @@ const createTaskStore = (function () {
 				})()
 				detailFlights.set(id, request)
 				return request
+			}
+
+			/**
+			 * T-233: fetch one card's full detail on demand (drawer/form open).
+			 *
+			 * The detail domain caches per card and keyed by the summary's updatedAt:
+			 * a poll that did not change the card never refetches, a changed card does.
+			 * A failed /task keeps the last good detail; it never blanks the card. Only a
+			 * card the board already shows is read here — the sidebar tab uses
+			 * ensureTaskDetail(), which does not need the summary.
+			 */
+			async function loadDetail(id) {
+				if (typeof id !== 'string' || id === '') return null
+				const summary = summaryOf(id)
+				if (summary === undefined) return null
+				if (detailDomain.needs(id, summary) !== true) return null
+				return requestDetail(id, summary)
+			}
+
+			/**
+			 * T-234: the sidebar tab's unit of work — ONE card's detail read.
+			 *
+			 * This is a POLLER, so every call reads: the tab can be mounted while
+			 * nothing polls the board at all (the user is on the agent's conversation),
+			 * and a summary that never moves would otherwise gate out the very change
+			 * the tab exists to show. The per-card single flight still collapses a tick
+			 * that overlaps an in-flight read, and the summary, when there is one, is
+			 * recorded on the entry so loadDetail()/compose() can compare it. A failed
+			 * /task keeps the last good answer; a project switch clears it.
+			 */
+			async function ensureTaskDetail(id) {
+				const key = typeof id === 'string' ? id.trim() : ''
+				if (key === '') return null
+				return requestDetail(key, summaryOf(key))
+			}
+
+			/**
+			 * T-234: the card's detail as a view reads it — the last GOOD answer (a
+			 * failed refresh keeps it), the request status, and never a fabricated
+			 * card. A project switch clears the domain, so this is empty again.
+			 */
+			function getTaskDetail(id) {
+				const key = typeof id === 'string' ? id.trim() : ''
+				if (key === '') return null
+				const entry = detailDomain.stateOf(key)
+				if (entry === null) return null
+				return {
+					id: key,
+					task: entry.data === null ? null : entry.data.task,
+					status: entry.status,
+					error: entry.error === undefined ? null : entry.error,
+					receivedAt: entry.receivedAt,
+				}
 			}
 
 			/**
@@ -4754,6 +4835,12 @@ const createTaskStore = (function () {
 				switchProject: switchProject,
 				listTasks: listTasks,
 				loadDetail: loadDetail,
+				// T-234: the per-card detail and the agents block, so the sidebar tab reads
+				// (and polls) ONE card instead of the whole board.
+				ensureTaskDetail: ensureTaskDetail,
+				getTaskDetail: getTaskDetail,
+				ensureAgents: ensureAgents,
+				agentsView: agentsView,
 				startPolling: startPolling,
 				stopPolling: stopPolling,
 			}
@@ -4892,6 +4979,24 @@ const createTaskStore = (function () {
  *     snapshot for a failure of the project it already shows, and drops that
  *     snapshot as soon as another project is seen, so a project switch never
  *     replays the previous project's card.
+ *
+ * T-234 — the tab reads ONE card, never the board:
+ *
+ *   - a mounted body no longer refreshes the shared board through the store's
+ *     load(). It asks the domain store for exactly what it renders:
+ *     `ensureTaskDetail(taskId)` (the card's own /task detail) and
+ *     `ensureAgents()` (the meta domain's agent tree), at mount and every 5 s
+ *     while the document is visible. A hidden tab pauses;
+ *     unmount clears only its own timer and visibility listener; the panel's
+ *     poll is never started or stopped from here;
+ *   - the card, the three stage rows and the title read the DETAIL first
+ *     (`getTaskDetail(taskId)`), so a review/test deliveredTo that lands while
+ *     the panel shows the agent conversation still reaches the tab, and a failed
+ *     detail keeps the last good card. Nothing is minted: a card that left the
+ *     board keeps its id with no stage;
+ *   - the live agent tree comes from the agents domain (`agentsView()`), with the
+ *     board snapshot as the fallback for a store without the domains or a tab
+ *     opened before the agents answer landed.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -4899,7 +5004,8 @@ const AGENT_TAB_BODY_SLOT = 'sidebar.right.pane.tab'
 const AGENT_TAB_TITLE_SLOT = 'sidebar.right.pane.tab.title'
 const AGENT_TAB_OPEN_ACTION = 'open-agent-sidebar'
 const AGENT_TAB_GUIDE_ORDER = 60
-// T-227: how often a VISIBLE tab refreshes the shared snapshot on its own.
+// T-227/T-234: how often a VISIBLE tab refreshes its OWN domains (the card's
+// detail and the agents block) on its own.
 const AGENT_TAB_SYNC_MS = 5000
 // T-212: the tab's navigation params carry the exact card it was opened from.
 const AGENT_TAB_TASK_PARAM = 'taskId'
@@ -5208,6 +5314,84 @@ function taskOfId(snapshot, taskId) {
 		if (isRecord(task) && String(task.id === undefined || task.id === null ? '' : task.id) === id) return task
 	}
 	return null
+}
+
+/**
+ * T-234: the card's own DETAIL from the domain store, or null.
+ *
+ * The tab is usually the only surface still watching its card (the panel may be
+ * showing the agent conversation and polling nothing), so it reads the detail
+ * domain instead of a /state summary. `getTaskDetail` answers with the last GOOD
+ * card: a failed refresh keeps the previous one, a project switch drops it.
+ */
+function detailTaskOf(store, taskId) {
+	const id = textOf(taskId)
+	if (id === null || store === null || store === undefined || typeof store.getTaskDetail !== 'function') return null
+	let detail = null
+	try {
+		detail = store.getTaskDetail(id)
+	} catch (error) {
+		return null
+	}
+	return isRecord(detail) && isRecord(detail.task) ? detail.task : null
+}
+
+/** The agents block of the metadata domain, whether the store exposes it as a value or a call. */
+function agentsBlockOf(store) {
+	if (store === null || store === undefined) return null
+	const read = store.agentsView
+	if (typeof read === 'function') {
+		let view = null
+		try {
+			view = read.call(store)
+		} catch (error) {
+			return null
+		}
+		return isRecord(view) ? view : null
+	}
+	return isRecord(read) ? read : null
+}
+
+/**
+ * T-234: the snapshot a tab RENDERS from — the board snapshot with THIS card's
+ * detail in place of its summary, and the live agent tree from the agents domain
+ * when it has one. The board stays the fallback: a store without the domains, or
+ * a tab opened before the detail landed, still resolves the exact card and the
+ * tree it always did. Nothing is borrowed from another card.
+ */
+function tabViewOf(store, snapshot, taskId) {
+	const board = isRecord(snapshot) ? snapshot : {}
+	const id = textOf(taskId)
+	const detail = detailTaskOf(store, id)
+	const agents = agentsBlockOf(store)
+	const tasks = Array.isArray(board.tasks) ? board.tasks.slice() : []
+	if (detail !== null) {
+		let replaced = false
+		for (let index = 0; index < tasks.length; index += 1) {
+			const entry = tasks[index]
+			const entryId = isRecord(entry) ? String(entry.id === undefined || entry.id === null ? '' : entry.id) : ''
+			if (entryId !== id) continue
+			tasks[index] = detail
+			replaced = true
+			break
+		}
+		if (replaced !== true) tasks.unshift(detail)
+	}
+	const tree = agents !== null && agents.agentTree !== undefined && agents.agentTree !== null ? agents.agentTree : board.agentTree
+	return {
+		tasks: tasks,
+		agentTree: tree === undefined ? null : tree,
+		activityEvents: board.activityEvents === undefined ? null : board.activityEvents,
+	}
+}
+
+/** The domain-store calls a mounted tab owns; null when the store offers neither. */
+function syncApiOf(store) {
+	if (store === null || store === undefined) return null
+	const ensureTaskDetail = typeof store.ensureTaskDetail === 'function' ? function (id) { return store.ensureTaskDetail(id) } : null
+	const ensureAgents = typeof store.ensureAgents === 'function' ? function () { return store.ensureAgents() } : null
+	if (ensureTaskDetail === null && ensureAgents === null) return null
+	return { ensureTaskDetail: ensureTaskDetail, ensureAgents: ensureAgents }
 }
 
 /**
@@ -5563,33 +5747,40 @@ function createAgentSidebar(deps) {
 	}
 
 	/**
-	 * T-227: the tab's own snapshot sync. The body only SUBSCRIBES to the shared
-	 * store, so a tab opened before a reviewer was delivered sat on its opening
-	 * snapshot until some other surface polled. This effect refreshes the store
-	 * once on mount and then every 5 s WHILE THE DOCUMENT IS VISIBLE.
+	 * T-234: the tab's own sync — ONE card's detail plus the agents domain.
 	 *
-	 * - a hidden document pauses the tab (no interval, no load); becoming visible
-	 *   refreshes at once and resumes the interval;
+	 * T-227 made every tab refresh the WHOLE board through the store's load(), so
+	 * a tab that only renders its card's review/test delivery and the live agent
+	 * tree pulled a /state answer through the shared store on every tick. The tab
+	 * now asks the domain store for exactly those two things at mount and every
+	 * 5 s WHILE THE DOCUMENT IS VISIBLE:
+	 *
+	 * - a hidden document pauses the tab (no interval, no ensure); becoming
+	 *   visible catches up at once and resumes the interval;
 	 * - cleanup clears only this tab's timer and its visibility listener. It never
-	 *   stops the panel's polling: that belongs to the panel, and several open
-	 *   tabs share the store's single-flight load;
-	 * - a failed load is swallowed; useStableSnapshot() then keeps the last GOOD
-	 *   card on screen for BOTH store failure shapes (the project-less payload
-	 *   snapshot and the offline copy) unless a project switch intervened.
+	 *   starts or stops the panel's poll: several open tabs share the store's
+	 *   single-flight domains;
+	 * - a failed ensure is swallowed: the detail domain keeps the last good card
+	 *   and useStableSnapshot() keeps the last good BOARD for a store that still
+	 *   reports a failure through its snapshot.
 	 */
-	function useTabSync() {
+	function useTabSync(selection) {
 		const store = context !== null ? context.store : null
-		const load = store !== null && store !== undefined && typeof store.load === 'function' ? store.load : null
+		const sync = syncApiOf(store)
+		const taskId = isRecord(selection) ? textOf(selection.taskId) : null
 		React.useEffect(function () {
-			if (load === null) return undefined
+			if (sync === null) return undefined
 			let handle = null
+			function absorb(pending) {
+				if (pending !== null && pending !== undefined && typeof pending.then === 'function') pending.then(noop, noop)
+			}
 			function refresh() {
 				if (tabIsHidden()) return
 				try {
-					const pending = load.call(store)
-					if (pending !== null && pending !== undefined && typeof pending.then === 'function') pending.then(noop, noop)
+					if (taskId !== null && sync.ensureTaskDetail !== null) absorb(sync.ensureTaskDetail(taskId))
+					if (sync.ensureAgents !== null) absorb(sync.ensureAgents())
 				} catch (error) {
-					/* keep the last snapshot; an offline poll never blanks the tab */
+					/* keep the last good domain answers; a failed poll never blanks the tab */
 				}
 			}
 			function stopTimer() {
@@ -5621,7 +5812,7 @@ function createAgentSidebar(deps) {
 					globalDocument.removeEventListener('visibilitychange', onVisibilityChange)
 				}
 			}
-		}, [])
+		}, [taskId])
 	}
 
 	/**
@@ -5666,7 +5857,9 @@ function createAgentSidebar(deps) {
 		const selection = tabSelectionOf(props)
 		const sessionId = selection.sessionId
 		const taskId = selection.taskId
-		const label = sessionId === '' ? t('agentTabTitle') : agentInfoOf(snapshot, sessionId, t, Date.now(), selectors, taskId).name
+		// T-234: the title names the DETAIL card's agent, falling back to the board.
+		const view = tabViewOf(context !== null ? context.store : null, snapshot, taskId)
+		const label = sessionId === '' ? t('agentTabTitle') : agentInfoOf(view, sessionId, t, Date.now(), selectors, taskId).name
 		return h('span', { className: 'gbt-agenttabtitle', 'data-agent-tab': 'title', 'data-agent-session': sessionId, 'data-agent-task': taskId === null ? '' : taskId }, h(AgentTabIcon, { size: 13 }), h('span', null, label))
 	}
 
@@ -5674,9 +5867,6 @@ function createAgentSidebar(deps) {
 		const t = useTranslate()
 		const snapshot = useStableSnapshot()
 		const now = useNow()
-		// T-227: refresh the shared store from this tab (mount + visible-only 5 s),
-		// before the early return so the hook order never changes between renders.
-		useTabSync()
 		// Read the navigation params before any early return so the injected
 		// tab-info hook is always called in the same order on every render.
 		// T-216: the tab lives in the HOST session, so the agent it names comes
@@ -5685,6 +5875,10 @@ function createAgentSidebar(deps) {
 		const selection = tabSelectionOf(props)
 		const sessionId = selection.sessionId
 		const taskId = selection.taskId
+		// T-234: keep THIS card's detail and the agents domain fresh (mount + a
+		// visible-only 5 s tick), before the early return so the hook order never
+		// changes between renders. The tab never pulls the board itself.
+		useTabSync(selection)
 		if (sessionId === '') {
 			return h(
 				'div',
@@ -5693,11 +5887,14 @@ function createAgentSidebar(deps) {
 				h('p', { className: 'gbt-footnote' }, t('agentTabNoSession')),
 			)
 		}
-		const info = agentInfoOf(snapshot, sessionId, t, now, selectors, taskId)
+		// T-234: the tab renders the board with ITS card's detail (and the live
+		// agent tree from the agents domain) layered on top.
+		const view = tabViewOf(context !== null ? context.store : null, snapshot, taskId)
+		const info = agentInfoOf(view, sessionId, t, now, selectors, taskId)
 		// T-219: the three stage rows come from the EXACT card the tab was opened
 		// from (never from the top agent's card, and never from another tab). A tab
 		// without a taskId (the guide overview) has no card and therefore no rows.
-		const card = taskId === null ? null : taskOfId(snapshot, taskId)
+		const card = taskId === null ? null : taskOfId(view, taskId)
 		const stages = card === null ? [] : stageSessionsOf(card)
 		const workspace = workspaceOf()
 		const hasStageSwitch = workspace !== null && stages.some(function (row) { return row.session !== null })
@@ -5706,7 +5903,7 @@ function createAgentSidebar(deps) {
 		function stageRowOf(row) {
 			const session = row.session
 			const hasSession = session !== null
-			const stageInfo = hasSession ? agentInfoOf(snapshot, session, t, now, selectors, taskId) : null
+			const stageInfo = hasSession ? agentInfoOf(view, session, t, now, selectors, taskId) : null
 			const canOpen = hasSession && workspace !== null
 			const buttonTitle = hasSession === false
 				? t('agentStageNoSessionHint')
