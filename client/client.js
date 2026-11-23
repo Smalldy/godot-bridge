@@ -3926,9 +3926,23 @@ const createTaskStore = (function () {
 				return true
 			}
 			/**
-			 * One answered request. The answer's revision is the EXACT invalidation: the
-			 * request leaves the queue now, and any list answer that started before the
-			 * answer carries the older revision and is dropped instead of resurrecting it.
+			 * One answered request.
+			 *
+			 * The answer's revision is an EXACT invalidation only when it is the commit
+			 * that produced the next revision of the queue on screen
+			 * (revision === shown + 1): the local queue then IS the server queue at that
+			 * revision, because exactly the answered request was removed.
+			 *
+			 * A revision that SKIPS an unseen write (another writer created a decision
+			 * between two polls) cannot be claimed: the filtered local queue does not
+			 * describe that revision, and dropping the list answer at that revision as
+			 * 'equal' would hide the decision the skipped write created — for good. The
+			 * revision is therefore left where it is and `refetch` asks the store to read
+			 * the consistent queue now; a pre-answer list answer still carries the OLD
+			 * revision and can never resurrect the answered request.
+			 *
+			 * The queue receipt is not moved here either: the surviving decisions keep
+			 * the remainingMs values of the answer that produced them.
 			 */
 			function answered(decisionId, revision) {
 				if (typeof decisionId === 'string' && decisionId !== '' && state.decisions !== null) {
@@ -3936,12 +3950,31 @@ const createTaskStore = (function () {
 						return entry === null || entry === undefined || entry.id !== decisionId
 					})
 				}
-				if (Number.isFinite(revision) && (state.revision === null || revision > state.revision)) state.revision = revision
-				// The queue receipt is NOT moved here: the surviving decisions keep the
-				// remainingMs values of the answer that produced them, and their countdown
-				// must keep running from THAT receipt. Only seed()/succeed() re-measure it.
+				let refetch = false
+				if (Number.isFinite(revision)) {
+					if (state.revision === null) {
+						// The host is revisioned but this queue never recorded a revision, so
+						// adopting the answer's number would claim a queue it cannot describe.
+						refetch = true
+					} else if (revision === state.revision + 1) {
+						state.revision = revision
+					} else if (revision > state.revision + 1) {
+						refetch = true
+					}
+					// revision <= shown: a late answer for an older write; the queue on screen
+					// already describes a newer revision, so leave it alone.
+				}
 				if (state.decisions !== null) keep('ready', null)
-				return true
+				return { ok: true, refetch: refetch }
+			}
+
+			/**
+			 * Abandon in-flight answers: they describe the queue as it was BEFORE a write
+			 * the caller knows landed. The data stays; the next read owns the domain.
+			 */
+			function invalidate() {
+				state.generation += 1
+				state.error = null
 			}
 			function reset(scope) {
 				state.generation += 1
@@ -3972,6 +4005,7 @@ const createTaskStore = (function () {
 				seed: seed,
 				fail: fail,
 				answered: answered,
+				invalidate: invalidate,
 				reset: reset,
 				view: view,
 			}
@@ -4691,7 +4725,7 @@ const createTaskStore = (function () {
 								answeredDecisions.add(decisionId)
 								// T-235: the answer's revision drops exactly that request from the shared
 								// queue (the snapshot above is already post-answer on a T-231 host).
-								decisionDomain.answered(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
+								absorbAnsweredDecision(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
 							}
 							// An action's answer (or openProject's full snapshot) also advertises
 							// the split; learn it here so a panel that bound a project before its
@@ -4742,7 +4776,7 @@ const createTaskStore = (function () {
 								// queue, so both surfaces advance at once. No full queue refresh follows:
 								// a list answer that started before the answer carries the older revision
 								// and loses the compare instead of resurrecting the request.
-								decisionDomain.answered(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
+								absorbAnsweredDecision(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
 								receivedAt = clock()
 							}
 							emit()
@@ -4775,7 +4809,7 @@ const createTaskStore = (function () {
 							// T-208/T-235: a host answer with neither a snapshot nor a changed list.
 							// Drop the answered request (and apply its revision) right away anyway.
 							answeredDecisions.add(decisionId)
-							decisionDomain.answered(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
+							absorbAnsweredDecision(decisionId, Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null)
 							receivedAt = clock()
 							emit()
 						}
@@ -4839,59 +4873,69 @@ const createTaskStore = (function () {
 				const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : DECISION_LOAD_TIMEOUT_MS
 				const project = tcPinnedProject()
 				const token = decisionDomain.begin(project === null ? '__session__' : projectKeyOf(project))
-				decisionsLoading = (async function () {
-					let timer = null
-					try {
-						const body = { action: 'decisionList', decisionStatus: 'pending', session: tcSessionId() }
-						if (project !== null) body.project = project
-						const request = fetchJson(tcWithSession(TC_ACTION_URL), {
-							method: 'POST',
-							headers: { 'content-type': 'application/json' },
-							body: JSON.stringify(body),
+				const promise = runDecisionList(token, project, timeoutMs)
+				decisionsLoading = promise
+				try {
+					return await promise
+				} finally {
+					// T-235 review: only the flight that still OWNS the guard releases it. A
+					// skipped-revision refetch supersedes the in-flight request (its token is
+					// stale); that older request must not clear the NEW flight's marker.
+					if (decisionsLoading === promise) decisionsLoading = null
+				}
+			}
+
+			/** One decisionList request bound to one generation token. */
+			async function runDecisionList(token, project, timeoutMs) {
+				let timer = null
+				try {
+					const body = { action: 'decisionList', decisionStatus: 'pending', session: tcSessionId() }
+					if (project !== null) body.project = project
+					const request = fetchJson(tcWithSession(TC_ACTION_URL), {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify(body),
+					})
+					let timeout = null
+					if (typeof setTimeout === 'function') {
+						timeout = new Promise(function (resolve) {
+							timer = setTimeout(function () { resolve(DECISION_LOAD_TIMEOUT) }, timeoutMs)
 						})
-						let timeout = null
-						if (typeof setTimeout === 'function') {
-							timeout = new Promise(function (resolve) {
-								timer = setTimeout(function () { resolve(DECISION_LOAD_TIMEOUT) }, timeoutMs)
-							})
-							// The race may settle on the timeout first; the late request must
-							// not surface as an unhandled rejection.
-							request.catch(function () {})
-						}
-						const payload = timeout === null ? await request : await Promise.race([request, timeout])
-						// A reset (project switch) or a newer request owns the domain now.
-						if (!decisionDomain.current(token)) return { ok: false, stale: true, payload: null }
-						if (payload === DECISION_LOAD_TIMEOUT) {
-							decisionDomain.fail(token, { message: 'the decision list timed out' }, 'degraded')
-							emit()
-							return { ok: false, timedOut: true, payload: null }
-						}
-						if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.decisions)) {
-							const revision = Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null
-							// The queue carries its own receipt time for the countdown; every
-							// other domain stays exactly as it is.
-							const landed = decisionDomain.succeed(token, payload.decisions, revision)
-							if (landed === true) receivedAt = clock()
-							emit()
-							if (landed !== true) return { ok: false, stale: true, revision: revision, decisions: payload.decisions }
-							return { ok: true, decisions: payload.decisions, revision: revision }
-						}
-						decisionDomain.fail(token, payload === undefined ? null : payload, 'degraded')
-						emit()
-						return { ok: false, payload: payload === undefined ? null : payload }
-					} catch (error) {
-						// A failed refresh keeps the last good queue: the modal must not vanish.
-						if (decisionDomain.current(token)) {
-							decisionDomain.fail(token, error, 'degraded')
-							emit()
-						}
-						return { ok: false, error: error }
-					} finally {
-						if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer)
-						decisionsLoading = null
+						// The race may settle on the timeout first; the late request must
+						// not surface as an unhandled rejection.
+						request.catch(function () {})
 					}
-				})()
-				return decisionsLoading
+					const payload = timeout === null ? await request : await Promise.race([request, timeout])
+					// A reset (project switch) or a newer request owns the domain now.
+					if (!decisionDomain.current(token)) return { ok: false, stale: true, payload: null }
+					if (payload === DECISION_LOAD_TIMEOUT) {
+						decisionDomain.fail(token, { message: 'the decision list timed out' }, 'degraded')
+						emit()
+						return { ok: false, timedOut: true, payload: null }
+					}
+					if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.decisions)) {
+						const revision = Number.isFinite(payload.decisionRevision) ? payload.decisionRevision : null
+						// The queue carries its own receipt time for the countdown; every
+						// other domain stays exactly as it is.
+						const landed = decisionDomain.succeed(token, payload.decisions, revision)
+						if (landed === true) receivedAt = clock()
+						emit()
+						if (landed !== true) return { ok: false, stale: true, revision: revision, decisions: payload.decisions }
+						return { ok: true, decisions: payload.decisions, revision: revision }
+					}
+					decisionDomain.fail(token, payload === undefined ? null : payload, 'degraded')
+					emit()
+					return { ok: false, payload: payload === undefined ? null : payload }
+				} catch (error) {
+					// A failed refresh keeps the last good queue: the modal must not vanish.
+					if (decisionDomain.current(token)) {
+						decisionDomain.fail(token, error, 'degraded')
+						emit()
+					}
+					return { ok: false, error: error }
+				} finally {
+					if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer)
+				}
 			}
 
 			/**
@@ -4907,6 +4951,27 @@ const createTaskStore = (function () {
 			/** Is the shell overlay entry available in this Host shell? */
 			function decisionOverlayAvailable() {
 				return decisionOverlayMounted === true
+			}
+
+			/**
+			 * T-235: apply an answer to the decisions domain.
+			 *
+			 * A single-step answer owns the next revision and lands exactly. A SKIPPED
+			 * revision means another writer committed in between (an Agent created a new
+			 * decision), so the local queue cannot describe it: the in-flight list answer is
+			 * abandoned (its token goes stale) and the consistent post-answer queue is read
+			 * NOW, instead of being rejected as 'equal' until some unrelated write moves the
+			 * revision again (by which time the skipped decision may already be expired).
+			 */
+			function absorbAnsweredDecision(decisionId, revision) {
+				const outcome = decisionDomain.answered(decisionId, revision)
+				if (outcome.refetch !== true) return outcome
+				decisionDomain.invalidate()
+				// Release the single-flight marker: a request started BEFORE the answer would
+				// answer with the pre-answer queue, and its finally must not clear the new one.
+				decisionsLoading = null
+				void loadDecisions()
+				return outcome
 			}
 
 			/** One page of the server-side completed list (T-82 /list route). */

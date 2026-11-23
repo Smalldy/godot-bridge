@@ -877,6 +877,9 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   })
   let statePayload = stateAnswer(['DEC-A'], 5)
   let listPayload = { ok: true, decisions: [{ id: 'DEC-A', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 5 }
+  // A single-step answer: the shown revision + 1. The SKIPPED-revision case is
+  // its own block below.
+  let answerRevision = 7
   const routedFetch = async (url, options) => {
     const text = String(url)
     if (text.indexOf('/state') === 0) return { json: async () => statePayload }
@@ -891,7 +894,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
       }
       if (body.action === 'decisionAnswer') {
         // A T-231 write envelope names the new queue generation.
-        return { json: async () => ({ ok: true, decision: { id: body.decisionId, status: 'answered' }, applied: null, seq: 1, affected: { ids: [], count: 0 }, changed: ['decisions'], decisionRevision: 8 }) }
+        return { json: async () => ({ ok: true, decision: { id: body.decisionId, status: 'answered' }, applied: null, seq: 1, affected: { ids: [], count: 0 }, changed: ['decisions'], decisionRevision: answerRevision }) }
       }
       if (body.action === 'openProject') {
         // The answer describes the NEW project, so the decisions domain must reset.
@@ -972,7 +975,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   const answered = await revisionStore.send('decisionAnswer', { decisionId: 'DEC-B', option: 'go' })
   assert.equal(answered.ok, true)
   assert.deepEqual(revisionStore.getSnapshot().decisions, [], 'the answered request left the shared queue')
-  assert.equal(revisionStore.getSnapshot().decisionRevision, 8, 'the answer carries the new revision')
+  assert.equal(revisionStore.getSnapshot().decisionRevision, 7, 'the single-step answer carries the new revision')
   assert.equal(listCalls.length, listsBefore, 'the answer invalidates by revision instead of refreshing the whole queue')
 
   // 7) A list answer that STARTED before the answer carries the older revision
@@ -1006,6 +1009,59 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 
+// ── T-235 review round 2: an answer that SKIPS a revision ───────────────────
+//
+// Another writer can create a decision between two polls, so an answer can land
+// on a revision more than one past the queue on screen (rev 5 [D1] -> answer at
+// rev 7, because rev 6 created D2). The local queue cannot claim revision 7 —
+// the list answer at 7 would be dropped as 'equal' and D2 would stay invisible
+// until an unrelated write moved the revision — so the domain keeps its old
+// revision, drops in-flight pre-answer answers and refetches the real queue.
+{
+  const listCalls = []
+  let answerRevision = 7
+  let listPayload = { ok: true, decisions: [{ id: 'DEC-D1', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 5 }
+  globalThis.fetch = async (url, options) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    }
+    if (text.indexOf('/meta') === 0) return { json: async () => ({ ok: true, meta: {}, errors: {}, metadata: { split: true, deferred: [] } }) }
+    if (text.indexOf('/action') === 0) {
+      const body = JSON.parse(options.body)
+      if (body.action === 'decisionList') {
+        listCalls.push(listPayload.decisionRevision)
+        return { json: async () => listPayload }
+      }
+      if (body.action === 'decisionAnswer') {
+        return { json: async () => ({ ok: true, decision: { id: body.decisionId, status: 'answered' }, applied: null, seq: 1, affected: { ids: [], count: 0 }, changed: ['decisions'], decisionRevision: answerRevision }) }
+      }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const skipStore = createTaskStore((key) => key, deps)
+  await skipStore.loadDecisions()
+  assert.deepEqual(skipStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-D1'])
+  assert.equal(skipStore.getSnapshot().decisionRevision, 5)
+
+  // The answer lands on revision 7: revision 6 was an UNSEEN write (D2 exists).
+  const requestsBefore = listCalls.length
+  listPayload = { ok: true, decisions: [{ id: 'DEC-D2', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 7 }
+  const answered = await skipStore.send('decisionAnswer', { decisionId: 'DEC-D1', option: 'go' })
+  assert.equal(answered.ok, true)
+  await tick()
+  const afterSkip = skipStore.getSnapshot()
+  assert.ok(listCalls.length > requestsBefore, 'a skipped revision is refetched instead of being claimed: ' + JSON.stringify(listCalls))
+  assert.deepEqual(afterSkip.decisions.map((entry) => entry.id), ['DEC-D2'], 'the decision the skipped write created becomes visible')
+  assert.equal(afterSkip.decisionRevision, 7, 'the consistent queue carries the answer revision')
+
+  // An older pre-answer list answer still cannot resurrect the answered request.
+  listPayload = { ok: true, decisions: [{ id: 'DEC-D1', status: 'pending' }], counts: { pending: 1 }, decisionRevision: 5 }
+  const stale = await skipStore.loadDecisions()
+  assert.equal(stale.stale, true, 'a pre-answer revision is dropped')
+  assert.deepEqual(skipStore.getSnapshot().decisions.map((entry) => entry.id), ['DEC-D2'], 'the answered request never comes back')
+  console.log('PASS  T-235 review round 2 a skipped answer revision refetches instead of hiding a new decision')
+}
 // ── T-235 review: the countdown baseline is the QUEUE receipt ───────────────
 //
 // /state still bumps the board receipt (agent-sidebar uses it as the snapshot
