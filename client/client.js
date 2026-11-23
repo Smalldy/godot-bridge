@@ -4011,6 +4011,166 @@ const createTaskStore = (function () {
 			}
 		}
 
+		/**
+		 * T-236: the ACTIVITY domain — the ONE owner of the activity timeline.
+		 *
+		 * Before this domain the timeline was a LAYER over /meta: the panel kept a
+		 * private log plus a cursor, and every metadata answer was absorbed into it.
+		 * /meta is a CACHED, shared build while the timeline is a CURSORED read whose
+		 * answer depends on what this caller already saw — so the two could only ever
+		 * be as fresh as the less fresh one, and a rebuild for some other reason
+		 * re-delivered events that had nothing to do with the activity.
+		 *
+		 * The domain now owns the whole timeline:
+		 *
+		 *   begin/current   every request owns a generation; an answer superseded by a
+		 *                   project switch or an invalidate never lands;
+		 *   succeed         the page is MERGED into what is already here (dedupe by
+		 *                   event key), the cursor only ever moves FORWARD, and a page
+		 *                   derived from an OLDER board revision than the shown one is
+		 *                   dropped instead of rewinding the log;
+		 *   fail            a failed poll keeps the last good log (degraded);
+		 *   reset           a project switch drops the log AND the cursor;
+		 *   fresh           the 5 s staleTime answers a duplicate poll without a
+		 *                   request (a re-mount never doubles the cadence).
+		 */
+		function tcCreateActivityCache(options) {
+			const o = options === undefined || options === null ? {} : options
+			const now = typeof o.now === 'function' ? o.now : function () { return Date.now() }
+			const staleTime = Number.isFinite(o.staleTime) && o.staleTime > 0 ? o.staleTime : 0
+			// How much of the timeline this client keeps. The card renders the newest
+			// 30; the rest is history for the "newest activity" header line.
+			const limit = Number.isFinite(o.limit) && o.limit > 0 ? Math.floor(o.limit) : 100
+			const state = {
+				name: typeof o.name === 'string' && o.name !== '' ? o.name : 'activity',
+				// Newest first: the accumulated log this client HOLDS.
+				entries: [],
+				// The composite "<at>|<key>" of the newest event applied, or null.
+				cursor: null,
+				// The board seq the newest applied answer was derived from.
+				revision: null,
+				// idle | loading | ready | degraded
+				status: 'idle',
+				error: null,
+				receivedAt: 0,
+				generation: 0,
+				lastGood: null,
+				// The project this log describes (null = not scoped yet).
+				scope: null,
+				staleTime: staleTime,
+			}
+			function begin(scope) {
+				state.generation += 1
+				state.scope = scope === undefined ? null : scope
+				// A log on screen keeps its status: 'degraded' stays visible until a good
+				// answer replaces it with 'ready'.
+				if (state.entries.length === 0) state.status = 'loading'
+				state.error = null
+				return { generation: state.generation, scope: state.scope }
+			}
+			function current(token) {
+				return token !== null && token !== undefined && token.generation === state.generation
+			}
+			/** Is this answer derived from a board at least as new as the one shown? */
+			function accepts(revision) {
+				if (!Number.isFinite(revision)) return true
+				if (state.revision === null) return true
+				return revision >= state.revision
+			}
+			function newestFirst(left, right) {
+				return new Date(right.at).getTime() - new Date(left.at).getTime()
+			}
+			/** Merge one incremental page (generation-checked, revision-checked). */
+			function succeed(token, page) {
+				if (!current(token)) return false
+				if (page === null || page === undefined || typeof page !== 'object') return false
+				if (!accepts(page.revision)) return false
+				const incoming = Array.isArray(page.entries) ? page.entries : []
+				const known = new Set(state.entries.map(function (entry) { return entry.key }))
+				const merged = state.entries.slice()
+				incoming.forEach(function (entry) {
+					if (entry === null || typeof entry !== 'object') return
+					const key = typeof entry.key === 'string' ? entry.key : null
+					if (key === null || known.has(key)) return
+					known.add(key)
+					merged.push(entry)
+				})
+				merged.sort(newestFirst)
+				state.entries = merged.slice(0, limit)
+				// A cursor only ever moves FORWARD: an older page must never make the
+				// next poll ask for events this client already applied.
+				const nextCursor =
+					typeof page.nextCursor === 'string' && page.nextCursor !== ''
+						? page.nextCursor
+						: typeof page.cursor === 'string' && page.cursor !== ''
+							? page.cursor
+							: null
+				if (nextCursor !== null && (state.cursor === null || nextCursor > state.cursor)) state.cursor = nextCursor
+				if (Number.isFinite(page.revision)) state.revision = state.revision === null ? page.revision : Math.max(state.revision, page.revision)
+				state.receivedAt = now()
+				state.status = 'ready'
+				state.error = null
+				state.lastGood = state.entries
+				return true
+			}
+			function fail(token, error) {
+				if (!current(token)) return false
+				// The log on screen is kept: a blipped poll must not empty the card.
+				state.status = 'degraded'
+				state.error = error === undefined ? null : error
+				return true
+			}
+			/** Abandon in-flight answers without dropping the log (an explicit refresh). */
+			function invalidate() {
+				state.generation += 1
+				state.error = null
+			}
+			function reset(scope) {
+				state.generation += 1
+				state.entries = []
+				state.cursor = null
+				state.revision = null
+				state.status = 'idle'
+				state.receivedAt = 0
+				state.error = null
+				state.lastGood = null
+				state.scope = scope === undefined ? null : scope
+			}
+			function fresh() {
+				return state.receivedAt !== 0 && staleTime > 0 && now() - state.receivedAt < staleTime
+			}
+			/** The { available, entries, cursor, ... } page the status view renders. */
+			function view() {
+				return {
+					available: true,
+					source: 'board',
+					entries: state.entries,
+					count: state.entries.length,
+					total: state.entries.length,
+					cursor: state.cursor,
+					revision: state.revision,
+					truncated: false,
+					status: state.status,
+					error: state.error,
+					receivedAt: state.receivedAt === 0 ? null : state.receivedAt,
+					scope: state.scope,
+					staleTime: staleTime,
+				}
+			}
+			return {
+				state: function () { return state },
+				begin: begin,
+				current: current,
+				accepts: accepts,
+				succeed: succeed,
+				fail: fail,
+				invalidate: invalidate,
+				reset: reset,
+				fresh: fresh,
+				view: view,
+			}
+		}
+
 		function createTaskStore(t, deps) {
 			const {
 				TC_STATE_URL,
@@ -4033,11 +4193,27 @@ const createTaskStore = (function () {
 			// Tests can inject a clock (deps.tcNow); the bundle has no such dep and
 			// falls back to the wall clock.
 			const clock = typeof deps.tcNow === 'function' ? deps.tcNow : function () { return Date.now() }
-			// T-233: the board / meta / detail domains. Decisions, activity and the
-			// banner stay store-level state until Phase 3 gives them their own owners.
+			// T-236: the activity cadence. The timeline is incremental and cheap to ask
+			// for, so it polls on its own 5 s tick while a surface (the status page)
+			// actually shows it; the 5 s staleTime collapses a poll that overlaps a
+			// re-mount into the answer already on hand.
+			const ACTIVITY_POLL_MS = 5000
+			const ACTIVITY_STALE_MS = 5000
+			// T-236: the worktree probe is LAZY and comparatively expensive (a git
+			// status + merge-base per checkout), so a re-mount inside 30 s is answered
+			// from the domain and only an explicit refresh asks the host again.
+			const WORKTREES_STALE_MS = 30000
+			// T-233: the board / meta / detail domains. The banner stays store-level
+			// state until Phase 3 gives it its own owner.
 			const boardDomain = tcCreateDomainCache({ name: 'board', now: clock })
 			const metaDomain = tcCreateDomainCache({ name: 'meta', now: clock, staleTime: META_STALE_MS })
 			const detailDomain = tcCreateDetailCache({ now: clock })
+			// T-236: activity and worktrees are domains too. The activity timeline used
+			// to be a LAYER over /meta (private log + cursor, absorbed from every
+			// metadata answer) and the worktree probe was fired by the status page and
+			// merged with /meta's inventory by hand: two owners, two freshness windows.
+			const activityDomain = tcCreateActivityCache({ name: 'activity', now: clock, staleTime: ACTIVITY_STALE_MS })
+			const worktreesDomain = tcCreateDomainCache({ name: 'worktrees', now: clock, staleTime: WORKTREES_STALE_MS })
 			// The first paint shows the pinned project when there is one; with an empty
 			// pin it shows nothing yet and the first /state answers with the project the
 			// session resolves to (no path to type, T-90).
@@ -4059,16 +4235,18 @@ const createTaskStore = (function () {
 			// The local arrival time of the last accepted snapshot: the decision
 			// countdown corrects the SERVER's remainingMs with this receipt time.
 			let receivedAt = clock()
-			// T-111: the Host answers the activity timeline incrementally. Keep what we
-			// already have and ask only for events after the last one we saw.
-			let activityCursor = null
-			let activityLog = []
 			// The host advertises the light/meta split on every answer
 			// (payload.metadata.split). An older host that omits it is never asked
 			// for /meta: the full /state it answered already carries everything.
 			let metaSupported = false
 			// { key, refresh, promise } — one metadata request per project.
 			let metaFlight = null
+			// T-236: one activity request at a time, and one worktree probe per
+			// project + requested path set (see loadActivity / loadWorktrees).
+			let activityFlight = null
+			let activityTimer = null
+			let activityRefs = 0
+			let worktreesFlight = null
 			// { scope, promise } — one board request per pinned project.
 			let boardFlight = null
 			let timer = null
@@ -4122,9 +4300,10 @@ const createTaskStore = (function () {
 			// correctly asking the user to pick a project. Its text is carried by the
 			// empty state (open-project entry) instead.
 			const UNBOUND_CODE = 'no-project-bound'
-			// /meta is derived from /state so the two halves can never point at
-			// different routes (the bundle has no second constant to keep in sync).
+			// /meta and /activity are derived from /state so the endpoints can never
+			// point at different routes (the bundle has no second constant to sync).
 			const TC_META_URL = TC_STATE_URL.replace(/\/state\/?$/, '/meta')
+			const TC_ACTIVITY_URL = TC_STATE_URL.replace(/\/state\/?$/, '/activity')
 
 			/** The host's expected "nothing is bound" refusal ({ ok:false, code }). */
 			function isUnbound(payload) {
@@ -4174,31 +4353,6 @@ const createTaskStore = (function () {
 			function currentProject() {
 				const project = boardData().project
 				return typeof project === 'string' && project !== '' ? project : null
-			}
-
-			/** Accumulate the Host's incremental activity page (cursor + dedupe by key). */
-			function absorbActivity(events) {
-				if (events === null || events === undefined || !Array.isArray(events.entries)) return
-				const known = new Set(activityLog.map(function (entry) { return entry.key }))
-				events.entries.forEach(function (entry) {
-					if (entry !== null && typeof entry === 'object' && typeof entry.key === 'string' && !known.has(entry.key)) activityLog.push(entry)
-				})
-				activityLog.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
-				activityLog = activityLog.slice(0, 100)
-				if (typeof events.cursor === 'string' && events.cursor !== '') activityCursor = events.cursor
-			}
-
-			/** The { available, source, entries, ... } page the status view renders. */
-			function activityEventPage() {
-				return {
-					available: true,
-					source: 'board',
-					entries: activityLog.slice(0, 50),
-					count: Math.min(activityLog.length, 50),
-					total: activityLog.length,
-					truncated: false,
-					cursor: activityCursor,
-				}
 			}
 
 			/** The resolved decision POLICY a snapshot carries (deferred /meta owns it otherwise). */
@@ -4290,7 +4444,17 @@ const createTaskStore = (function () {
 					}
 					: { status: 'idle', errors: {}, receivedAt: null }
 				if (metaMatches && metaState.data !== null) applyMetaBlocks(next, metaState.data)
-				if (activityLog.length > 0) next.activityEvents = activityEventPage()
+				// T-236: the worktrees card reads ONE block — /meta's inventory merged
+				// with the lazy probe the worktrees domain owns — so the page never has
+				// to combine two answers with two freshness windows itself.
+				next.worktrees = worktreesView(next.project, next.worktrees)
+				// T-236: the activity timeline is the activity domain's alone. /state and
+				// /meta no longer layer events onto it; until the first incremental answer
+				// lands the field is absent and the status page falls back to the card
+				// history it already has (the same render path an older Host uses).
+				const activityState = activityDomain.state()
+				const activityMatches = project !== null && activityState.scope !== null && activityState.scope === project
+				if (activityMatches && activityState.receivedAt !== 0) next.activityEvents = activityDomain.view()
 				return next
 			}
 
@@ -4344,7 +4508,6 @@ const createTaskStore = (function () {
 			function metaUrlFor(project, refresh) {
 				let url = TC_META_URL + '?project=' + encodeURIComponent(project)
 				if (refresh === true) url += '&refresh=1'
-				if (activityCursor !== null) url += '&activitySince=' + encodeURIComponent(activityCursor)
 				return tcWithSession(url)
 			}
 
@@ -4403,7 +4566,10 @@ const createTaskStore = (function () {
 						}
 						if (isMetaSplit(payload)) metaSupported = true
 						const meta = payload.meta !== undefined && payload.meta !== null && typeof payload.meta === 'object' ? payload.meta : null
-						absorbActivity(meta === null ? null : meta.activityEvents)
+						// T-236: /meta's activityEvents field is a COMPATIBILITY field for
+						// older panels; this client's timeline is the activity domain's,
+						// requested on its own cursor. Layering the cached metadata answer
+						// here is exactly what made two owners describe the same events.
 						const errors = payload.errors !== undefined && payload.errors !== null && typeof payload.errors === 'object' ? payload.errors : {}
 						const degraded = Object.keys(errors).length > 0
 						metaDomain.succeed(token, meta, degraded ? 'degraded' : 'ready', degraded ? errors : null)
@@ -4535,11 +4701,12 @@ const createTaskStore = (function () {
 							message = ''
 							messageKind = null
 							boardFailed = false
-							// T-210/T-233: no project means no metadata and no detail.
+							// T-210/T-233/T-236: no project means no metadata, no detail, no
+							// activity log and no worktree probe.
 							resetMetaDomain(null)
 							clearDetails()
-							activityLog = []
-							activityCursor = null
+							activityDomain.reset(null)
+							worktreesDomain.reset(null)
 							boardDomain.succeed(token, unbound)
 							emit()
 							return { ok: true, payload: payload }
@@ -4554,12 +4721,12 @@ const createTaskStore = (function () {
 							next.source = 'host'
 							const nextProject = projectKeyOf(next.project)
 							receivedAt = clock()
-							// T-111/T-210/T-233/T-235: a project switch starts a new activity log and
-							// invalidates EVERY other domain (metadata, details and the decisions queue
-							// all describe the OLD project now).
+							// T-111/T-210/T-233/T-235/T-236: a project switch starts a new activity
+							// log and worktree probe and invalidates EVERY other domain (metadata,
+							// details and the decisions queue all describe the OLD project now).
 							if (nextProject !== previousProject) {
-								activityLog = []
-								activityCursor = null
+								activityDomain.reset(nextProject)
+								worktreesDomain.reset(nextProject)
 								resetMetaDomain(next.project)
 								clearDetails()
 								// T-235 review: reset only on a REAL switch; null -> '/repo' is the
@@ -4573,9 +4740,8 @@ const createTaskStore = (function () {
 							// Bootstrap only: a project switch cleared the domain, so the NEW board's
 							// queue seeds it; a routine poll cannot overwrite a newer list answer.
 							seedDecisions(payload)
-							// An OLDER Host answers /state with the activity timeline itself; a
-							// split Host sends it from /meta (absorbed in loadMeta).
-							if (payload.activityEvents !== undefined && payload.activityEvents !== null) absorbActivity(payload.activityEvents)
+							// T-236: neither /state nor /meta feeds the timeline any more. The
+							// activity domain reads GET /activity on its own cursor.
 							if (isMetaSplit(payload)) metaSupported = true
 							// A routine poll keeps the user's last ACTION outcome (only the board
 							// data refreshes), but the transport's own text stops being true the
@@ -4593,6 +4759,12 @@ const createTaskStore = (function () {
 							// never asks for /meta again.
 							if (refresh === true) void loadMeta({ refresh: true })
 							else maybeLoadMeta(next.project)
+							// T-236: a status page can be mounted while the FIRST board answer is
+							// still in flight (a cold load on the status tab), and the activity
+							// domain had no project to ask about yet. Seed it now instead of
+							// making the timeline wait for the next 5 s tick; a routine poll of a
+							// project the timeline already describes never asks again.
+							if (activityRefs > 0 && (nextProject !== previousProject || activityDomain.state().scope !== nextProject)) void loadActivity()
 							return { ok: true, payload: payload }
 						}
 						// A real /state failure: keep the last good board (tasks, project,
@@ -4734,8 +4906,8 @@ const createTaskStore = (function () {
 							// T-210 review/T-233: the answer may describe ANOTHER project
 							// (openProject). NOTHING of the old board may survive onto it.
 							if (nextProject !== previousProject) {
-								activityLog = []
-								activityCursor = null
+								activityDomain.reset(nextProject)
+								worktreesDomain.reset(nextProject)
 								resetMetaDomain(next.project)
 								clearDetails()
 								// T-235: decision ids are project-scoped, so a real switch drops the
@@ -5169,34 +5341,244 @@ const createTaskStore = (function () {
 					// T-235: a host that echoed no snapshot leaves the OLD project's queue
 					// behind; the new project's own answers seed the domain again.
 					decisionDomain.reset(key)
-					activityLog = []
-					activityCursor = null
+					// T-236: the timeline and the worktree probe are project-scoped too.
+					activityDomain.reset(key)
+					worktreesDomain.reset(key)
 				}
 				emit()
 				void loadMeta()
 				return result
 			}
 
+			// ── T-236: the activity domain's ONE request ───────────────────────────
+
+			/** The /activity URL for a project and this client's own cursor. */
+			function activityUrlFor(project, cursor) {
+				let url = TC_ACTIVITY_URL + '?project=' + encodeURIComponent(project)
+				if (typeof cursor === 'string' && cursor !== '') url += '&cursor=' + encodeURIComponent(cursor)
+				return tcWithSession(url)
+			}
+
 			/**
-			 * T-146: lazy dirty/merged probe. /state only carries the worktree
-			 * inventory; the status card asks this endpoint for the checkouts it
-			 * actually shows (one request, no snapshot attached).
+			 * T-236: one incremental activity read — the activity domain's only writer.
+			 *
+			 * The request asks for what this client has NOT seen yet (its own cursor),
+			 * is single-flighted per project, and records the answer's board revision
+			 * so a slow answer that describes an older board is dropped instead of
+			 * rewinding the log. A failed read keeps the last good log (degraded) and
+			 * never raises the board banner: the timeline is a panel block, not the
+			 * board.
+			 *
+			 * options.refresh asks the host now instead of waiting for the 5 s cadence
+			 * (the status page's refresh button). It does NOT reset the cursor: the log
+			 * this client accumulated stays, and the answer is still incremental.
 			 */
-			async function loadWorktrees(paths) {
-				const params = []
-				const pinned = tcPinnedProject()
-				if (pinned !== null) params.push('project=' + encodeURIComponent(pinned))
-				if (Array.isArray(paths)) {
-					paths.forEach(function (path) {
-						if (typeof path === 'string' && path !== '') params.push('path=' + encodeURIComponent(path))
+			async function loadActivity(options) {
+				const o = options === undefined || options === null ? {} : options
+				const refresh = o.refresh === true
+				const project = currentProject()
+				if (project === null) return { ok: false, code: 'no-project' }
+				const key = projectKeyOf(project)
+				if (activityDomain.state().scope !== key) activityDomain.reset(key)
+				// A forced refresh is never satisfied by a routine in-flight request.
+				if (activityFlight !== null && activityFlight.key === key && (refresh !== true || activityFlight.refresh === true)) return activityFlight.promise
+				// T-236: the client-side TTL. A re-mount (or a second surface) inside the
+				// window reads the domain instead of spending a request.
+				if (refresh !== true && activityDomain.fresh()) return { ok: true, cached: true }
+				const token = activityDomain.begin(key)
+				emit()
+				const request = (async function () {
+					try {
+						const payload = await fetchJson(activityUrlFor(project, activityDomain.state().cursor), { headers: { accept: 'application/json' } })
+						// A newer request (or a project switch) owns the domain now.
+						if (!activityDomain.current(token)) return { ok: false, stale: true }
+						if (payload === null || payload === undefined || payload.ok !== true) {
+							const error = payload !== null && payload !== undefined && typeof payload === 'object' ? { code: payload.code === undefined ? null : payload.code, message: payload.message === undefined ? null : payload.message } : null
+							activityDomain.fail(token, error)
+							emit()
+							return { ok: false, payload: payload === undefined ? null : payload }
+						}
+						const landed = activityDomain.succeed(token, payload)
+						emit()
+						if (landed !== true) return { ok: false, stale: true, revision: payload.revision }
+						return { ok: true, payload: payload }
+					} catch (error) {
+						// A transport failure is a DEGRADED timeline, never a board error.
+						if (activityDomain.current(token)) {
+							activityDomain.fail(token, { message: String((error && error.message) || error) })
+							emit()
+						}
+						return { ok: false, error: error }
+					} finally {
+						if (activityFlight !== null && activityFlight.promise === request) activityFlight = null
+					}
+				})()
+				activityFlight = { key: key, refresh: refresh, promise: request }
+				return request
+			}
+
+			/** The explicit refresh: ask the host now, keep the log. */
+			function refreshActivity() {
+				return loadActivity({ refresh: true })
+			}
+
+			/**
+			 * T-236: the activity cadence. The status page is the only surface that
+			 * renders the timeline, so IT registers (ref-counted) and the timer stops
+			 * with the last one leaving. A hidden tab costs nothing and catches up on
+			 * return.
+			 */
+			function startActivityPolling(ms) {
+				activityRefs += 1
+				const interval = Number.isFinite(ms) && ms > 0 ? ms : ACTIVITY_POLL_MS
+				if (activityTimer === null) {
+					void loadActivity()
+					if (typeof setInterval === 'function') {
+						activityTimer = setInterval(function () {
+							if (pageHidden()) return
+							void loadActivity()
+						}, interval)
+					}
+					ensureVisibilityHandler()
+				}
+				return activityRefs
+			}
+
+			function stopActivityPolling() {
+				if (activityRefs > 0) activityRefs -= 1
+				if (activityRefs > 0) return activityRefs
+				if (activityTimer !== null && typeof clearInterval === 'function') clearInterval(activityTimer)
+				activityTimer = null
+				releaseVisibilityHandler()
+				return 0
+			}
+
+			// ── T-236: the worktrees domain's lazy probe ───────────────────────────
+
+			/** The /worktrees URL for a project and the checkouts a surface shows. */
+			function worktreesUrlFor(project, paths) {
+				const params = ['project=' + encodeURIComponent(project)]
+				paths.forEach(function (path) { params.push('path=' + encodeURIComponent(path)) })
+				return tcWithSession(TC_WORKTREES_URL + '?' + params.join('&'))
+			}
+
+			/**
+			 * Does a cached probe answer COVER the checkouts a surface is asking about?
+			 *
+			 * A 30 s cache is only reusable for the rows it actually probed: the server
+			 * answers "requested: null" when it probed every non-main checkout (those
+			 * cover anything), and otherwise only the named paths carry a verdict.
+			 */
+			function probeCovers(data, paths) {
+				if (data === null || data === undefined || data.available !== true) return false
+				if (data.requested === null) return true
+				if (!Array.isArray(paths) || paths.length === 0) return false
+				const probed = new Map()
+				if (Array.isArray(data.worktrees)) {
+					data.worktrees.forEach(function (entry) {
+						if (entry !== null && typeof entry === 'object' && typeof entry.path === 'string') probed.set(projectKeyOf(entry.path), entry.probed === true)
 					})
 				}
-				const url = tcWithSession(TC_WORKTREES_URL + (params.length === 0 ? '' : '?' + params.join('&')))
-				try {
-					const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
-					return payload === null || payload === undefined ? { ok: false } : payload
-				} catch (error) {
-					return { ok: false, error: String((error && error.message) || error) }
+				return paths.every(function (path) { return probed.get(projectKeyOf(path)) === true })
+			}
+
+			/**
+			 * T-236: lazy dirty/merged probe, owned by the worktrees domain.
+			 *
+			 * The status card asks this for the checkouts it actually shows. Inside the
+			 * 30 s staleTime (and when the cached answer covers those rows) the domain
+			 * answers without a request, so a re-mount or a re-render is free; the
+			 * request itself is single-flighted per project + path set, and a failed
+			 * probe keeps the last good answer.
+			 *
+			 * options: { paths, refresh }. refresh is the explicit refresh (the page's
+			 * button, and the post-condition of a cleanup) and always asks the host.
+			 * An array is accepted as the path list for older callers.
+			 */
+			async function loadWorktrees(options) {
+				const o = Array.isArray(options) ? { paths: options } : options === undefined || options === null ? {} : options
+				const refresh = o.refresh === true
+				const project = currentProject()
+				if (project === null) return { ok: false, code: 'no-project' }
+				const key = projectKeyOf(project)
+				const paths = Array.isArray(o.paths) ? o.paths.filter(function (path) { return typeof path === 'string' && path !== '' }) : []
+				if (worktreesDomain.state().scope !== key) worktreesDomain.reset(key)
+				const flightKey = key + '|' + (paths.length === 0 ? '*' : paths.slice().sort().join(','))
+				if (worktreesFlight !== null && worktreesFlight.key === flightKey && (refresh !== true || worktreesFlight.refresh === true)) return worktreesFlight.promise
+				if (refresh !== true && worktreesDomain.fresh() && probeCovers(worktreesDomain.state().data, paths)) return { ok: true, cached: true }
+				const token = worktreesDomain.begin(key)
+				emit()
+				const request = (async function () {
+					try {
+						const payload = await fetchJson(worktreesUrlFor(project, paths), { headers: { accept: 'application/json' } })
+						if (!worktreesDomain.current(token)) return { ok: false, stale: true }
+						if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.worktrees)) {
+							worktreesDomain.succeed(token, payload, 'ready', null)
+							emit()
+							return { ok: true, payload: payload }
+						}
+						worktreesDomain.fail(token, payload === undefined ? null : payload, 'degraded')
+						emit()
+						return { ok: false, payload: payload === undefined ? null : payload }
+					} catch (error) {
+						if (worktreesDomain.current(token)) {
+							worktreesDomain.fail(token, { message: String((error && error.message) || error) }, 'degraded')
+							emit()
+						}
+						return { ok: false, error: error }
+					} finally {
+						if (worktreesFlight !== null && worktreesFlight.promise === request) worktreesFlight = null
+					}
+				})()
+				worktreesFlight = { key: flightKey, refresh: refresh, promise: request }
+				return request
+			}
+
+			/** The explicit worktree refresh: always asks the host. */
+			function refreshWorktrees(options) {
+				const o = Array.isArray(options) ? { paths: options } : options === undefined || options === null ? {} : options
+				return loadWorktrees(Object.assign({}, o, { refresh: true }))
+			}
+
+			/**
+			 * T-236: the worktrees block the status page renders — ONE projection of
+			 * /meta's inventory and the probe the worktrees domain owns.
+			 *
+			 * Before this projection the page combined the two answers by hand: the
+			 * inventory from /meta and the verdicts from its own /worktrees call, which
+			 * is how one card could show a checkout listed by an older answer and
+			 * probed by a newer one. The domain's answer already carries the whole
+			 * inventory WITH probes, so it wins as soon as it lands; /meta's inventory
+			 * is only the first-paint stand-in (and the fallback for a host that has no
+			 * /worktrees route).
+			 */
+			function worktreesView(project, inventory) {
+				const key = projectKeyOf(project)
+				const state = worktreesDomain.state()
+				const matches = key !== null && state.scope !== null && state.scope === key
+				const probe = matches && state.data !== null ? state.data : null
+				const base = inventory !== null && inventory !== undefined && typeof inventory === 'object' ? inventory : null
+				const probeInfo = {
+					status: !matches ? 'idle' : state.status === 'loading' ? 'loading' : state.status === 'degraded' || state.status === 'error' ? 'error' : probe !== null ? 'ready' : 'idle',
+					receivedAt: matches && state.receivedAt !== 0 ? state.receivedAt : null,
+					error: matches ? state.error : null,
+				}
+				if (probe === null) {
+					if (base === null) return null
+					return Object.assign({}, base, { probe: probeInfo })
+				}
+				const list = Array.isArray(probe.worktrees) ? probe.worktrees : []
+				const baseTotal = base !== null && Number.isFinite(base.total) ? base.total : null
+				const baseActive = base !== null && Number.isFinite(base.active) ? base.active : null
+				return {
+					available: true,
+					error: probe.error === undefined ? null : probe.error,
+					total: Number.isFinite(probe.total) ? probe.total : baseTotal === null ? list.length : baseTotal,
+					active: Number.isFinite(probe.active) ? probe.active : baseActive === null ? list.filter(function (entry) { return entry !== null && entry !== undefined && entry.active === true }).length : baseActive,
+					counts: probe.counts !== undefined && probe.counts !== null ? probe.counts : base === null ? null : base.counts,
+					probedAt: probe.probedAt === undefined ? null : probe.probedAt,
+					worktrees: list,
+					probe: probeInfo,
 				}
 			}
 
@@ -5209,7 +5591,7 @@ const createTaskStore = (function () {
 				}
 			}
 
-			/** One visibility listener serves BOTH pollers (the board and the queue). */
+			/** One visibility listener serves every poller (board, queue, activity). */
 			function ensureVisibilityHandler() {
 				if (typeof document === 'undefined' || document === null || typeof document.addEventListener !== 'function') return
 				if (visibilityHandler !== null) return
@@ -5217,13 +5599,15 @@ const createTaskStore = (function () {
 					if (pageHidden()) return
 					if (timer !== null) void load()
 					if (decisionTimer !== null) void loadDecisions()
+					// T-236: returning to the tab catches the timeline up at once.
+					if (activityTimer !== null) void loadActivity()
 				}
 				document.addEventListener('visibilitychange', visibilityHandler)
 			}
 
 			function releaseVisibilityHandler() {
 				// The listener stays only while at least one poller still needs it.
-				if (timer !== null || decisionTimer !== null) return
+				if (timer !== null || decisionTimer !== null || activityTimer !== null) return
 				if (visibilityHandler !== null && typeof document !== 'undefined' && document !== null && typeof document.removeEventListener === 'function') {
 					document.removeEventListener('visibilitychange', visibilityHandler)
 				}
@@ -5305,11 +5689,24 @@ const createTaskStore = (function () {
 					meta: metaDomain,
 					detail: detailDomain,
 					decisions: decisionDomain,
+					// T-236: both are single-source domains. The status page renders
+					// snapshot.worktrees / snapshot.activityEvents, which are projections
+					// of these; nothing else may request the same endpoint.
+					activity: activityDomain,
+					worktrees: worktreesDomain,
 				},
 				META_STALE_MS: META_STALE_MS,
+				ACTIVITY_POLL_MS: ACTIVITY_POLL_MS,
+				ACTIVITY_STALE_MS: ACTIVITY_STALE_MS,
+				WORKTREES_STALE_MS: WORKTREES_STALE_MS,
 				load: load,
 				loadMeta: loadMeta,
 				loadDecisions: loadDecisions,
+				// T-236: the activity timeline's own read and 5 s cadence.
+				loadActivity: loadActivity,
+				refreshActivity: refreshActivity,
+				startActivityPolling: startActivityPolling,
+				stopActivityPolling: stopActivityPolling,
 				// T-235: the ONE shared decision cadence (ref-counted by surface).
 				startDecisionsPolling: startDecisionsPolling,
 				stopDecisionsPolling: stopDecisionsPolling,
@@ -5320,7 +5717,11 @@ const createTaskStore = (function () {
 				decisionOverlayAvailable: decisionOverlayAvailable,
 				DECISION_LOAD_TIMEOUT_MS: DECISION_LOAD_TIMEOUT_MS,
 				send: send,
+				// T-236: the lazy worktree probe, owned by the worktrees domain; the
+				// explicit refresh is what the status page's button and the cleanup's
+				// post-condition call.
 				loadWorktrees: loadWorktrees,
+				refreshWorktrees: refreshWorktrees,
 				switchProject: switchProject,
 				listTasks: listTasks,
 				loadDetail: loadDetail,
@@ -9031,7 +9432,13 @@ function createStatusView(deps) {
 			const dependency = task.dependency === null || task.dependency === undefined ? null : task.dependency
 			return dependency === null || dependency.state !== 'ready'
 		})
+		// T-236: ONE block. The store projects the inventory (/meta) and the lazy
+		// probe (/worktrees) into it from the worktrees domain, so this page renders
+		// rows that already carry their verdict — it never merges two answers and
+		// never calls the endpoint itself.
 		const worktrees = snapshot.worktrees
+		const worktreeProbe = worktrees !== null && worktrees !== undefined && worktrees.probe !== null && typeof worktrees.probe === 'object' ? worktrees.probe : null
+		const worktreeProbeState = worktreeProbe === null ? 'idle' : typeof worktreeProbe.status === 'string' ? worktreeProbe.status : 'idle'
 		const activity = snapshot.activity
 		// T-111: the sweep is telemetry, not an event.
 		const lastSweep = snapshot.lastSweep !== null && snapshot.lastSweep !== undefined && typeof snapshot.lastSweep.at === 'string' ? snapshot.lastSweep : null
@@ -9431,9 +9838,8 @@ function createStatusView(deps) {
 		const wtLabelOf = function (entry) { return typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : wtBaseOf(entry.path) }
 		const cleanupUi = worktreeCleanupUi
 		const wtBump = function () { setCleanupTick(function (count) { return count + 1 }) }
-		const worktreeSignature = wtList.map(function (entry) {
-			return String(entry.path) + ':' + (entry.active === true ? 'a' : '-')
-		}).join('|')
+		const stalePaths = staleWts.map(function (entry) { return String(entry.path) })
+		const staleSignature = stalePaths.join('|')
 		const wtApplyPreflight = function (outcome) {
 			const payload = outcome !== null && outcome !== undefined && outcome.ok === true && outcome.payload !== null && outcome.payload !== undefined ? outcome.payload : null
 			cleanupUi.pending = false
@@ -9456,27 +9862,28 @@ function createStatusView(deps) {
 			wtBump()
 			void store.send('worktreesCleanup', { dryRun: true }, { quiet: true }).then(wtApplyPreflight)
 		}
-		// T-146: /state only carries the inventory. Probe the stale checkouts
-		// lazily (never an automatic cleanup dry run) when the card is shown.
+		// T-146/T-236: the dirty/merged verdicts are LAZY. The WORKTREES DOMAIN owns
+		// that read — it probes only the checkouts this card shows, answers a repeat
+		// call from its 30 s cache when the cached answer covers those rows, and
+		// single-flights the request. The page therefore never fires the endpoint
+		// itself and never stores a second copy of the answer. Never an automatic
+		// cleanup dry run.
 		React.useEffect(function () {
-			if (worktreeSignature === '') return
-			if (worktreeCleanupUi.probeState === 'loading') return
-			if (worktreeCleanupUi.probedSignature === worktreeSignature) return
-			worktreeCleanupUi.probedSignature = worktreeSignature
-			worktreeCleanupUi.probeState = 'loading'
-			wtBump()
-			const paths = staleWts.map(function (entry) { return entry.path })
-			void store.loadWorktrees(paths).then(function (payload) {
-		if (payload !== null && payload !== undefined && payload.ok === true) {
-			worktreeCleanupUi.probe = payload
-			worktreeCleanupUi.probeState = 'ready'
-		} else {
-			worktreeCleanupUi.probe = null
-			worktreeCleanupUi.probeState = 'error'
-		}
-		wtBump()
-			})
-		}, [worktreeSignature])
+			if (staleSignature === '') return
+			if (typeof store.loadWorktrees !== 'function') return
+			void store.loadWorktrees({ paths: staleSignature.split('|') })
+		}, [staleSignature])
+		// T-236: the activity timeline is its own domain with its own 5 s cadence.
+		// This page REGISTERS while mounted (the store ref-counts, so a remount never
+		// doubles the cadence) and releases on the way out; the timeline itself is
+		// never requested by a render.
+		React.useEffect(function () {
+			if (typeof store.startActivityPolling !== 'function') return undefined
+			store.startActivityPolling()
+			return function () {
+				if (typeof store.stopActivityPolling === 'function') store.stopActivityPolling()
+			}
+		}, [])
 		const wtExecute = function (paths, force) {
 			if (cleanupUi.executing === true || Array.isArray(paths) === false || paths.length === 0) return
 			const body = { dryRun: false, paths: paths }
@@ -9492,24 +9899,35 @@ function createStatusView(deps) {
 			cleanupUi.result = payload
 			cleanupUi.preflight = null
 			cleanupUi.selected = {}
-			cleanupUi.probe = null
-			cleanupUi.probeState = 'idle'
-			cleanupUi.probedSignature = null
-			void store.load()
+			// T-236: the cleanup CHANGED the checkouts, so the worktrees domain is
+			// re-probed explicitly (a blanket store.load() re-read the board, which
+			// has nothing to do with the rows that just disappeared).
+			if (typeof store.refreshWorktrees === 'function') void store.refreshWorktrees()
 		} else {
 			cleanupUi.result = { ok: false, code: payload !== null && typeof payload.code === 'string' ? payload.code : 'worktrees-cleanup-failed' }
 		}
 		wtBump()
 			})
 		}
+		/**
+		 * T-236: the page's explicit refresh — force exactly the domains THIS page
+		 * reads through the store: the activity timeline and the worktree probe.
+		 *
+		 * It is deliberately not load({ refresh: true }): the board keeps its own
+		 * 2.5 s cadence and /meta its own TTL, and forcing them from here rebuilt a
+		 * host inventory nobody asked for on every click.
+		 */
+		const refreshStatusDomains = function () {
+			if (typeof store.refreshActivity === 'function') void store.refreshActivity()
+			if (typeof store.refreshWorktrees === 'function') void store.refreshWorktrees()
+		}
 		const preflightCandidates = cleanupUi.preflight !== null && Array.isArray(cleanupUi.preflight.candidates) ? cleanupUi.preflight.candidates : []
 		const candidateByPath = {}
 		preflightCandidates.forEach(function (candidate) { if (typeof candidate.path === 'string') candidateByPath[candidate.path] = candidate })
-		const probeEntries = cleanupUi.probe !== null && Array.isArray(cleanupUi.probe.worktrees) ? cleanupUi.probe.worktrees : []
-		const probeByPath = {}
-		probeEntries.forEach(function (entry) { if (entry !== null && typeof entry === 'object' && typeof entry.path === 'string') probeByPath[entry.path] = entry })
-		const wtEffective = function (entry) { const probed = probeByPath[entry.path]; return probed === undefined ? entry : Object.assign({}, entry, probed) }
-		const effectiveStale = staleWts.map(wtEffective)
+		// T-236: "probed" is simply "the domain has a verdict for this checkout".
+		// It rides on the row itself now instead of being patched in from a second
+		// local probe answer.
+		const effectiveStale = staleWts
 		const safeCount = effectiveStale.filter(function (entry) { return entry.probed === true && entry.safe === true }).length
 		const confirmCount = effectiveStale.filter(function (entry) { return entry.probed === true && entry.safe !== true }).length
 		const activeCount = worktrees !== null && worktrees !== undefined && Number.isFinite(worktrees.active) ? worktrees.active : activeWts.length + (mainWt === undefined ? 0 : 1)
@@ -9530,7 +9948,7 @@ function createStatusView(deps) {
 			// T-146: dirty/merged arrive from the lazy probe, not /state.
 			if (entry.probed !== true) {
 		return h('span', { className: 'gbt-wtbadges', 'data-wt-probed': 'false' },
-			h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed')))
+			h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, t(worktreeProbeState === 'loading' ? 'statusWtProbing' : worktreeProbeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed')))
 			}
 			const dirty = entry.dirty === true
 			const merged = entry.merged === true
@@ -9552,7 +9970,7 @@ function createStatusView(deps) {
 		const mainRow = mainWt === undefined ? null : wtRowBase('wt-main', mainWt, 'main', t('statusWtActiveState'))
 		const activeRows = activeWts.map(function (entry) { return wtRowBase('wt-active-' + String(entry.path), entry, 'active', t('statusWtActiveState')) })
 		const staleRows = staleWts.map(function (entry) {
-			const effective = wtEffective(entry)
+			const effective = entry
 			const candidate = candidateByPath[entry.path]
 			const safeEligible = candidate !== undefined && candidate.why === 'safe'
 			const forceEligible = candidate !== undefined && (candidate.why === 'dirty' || candidate.why === 'unmerged')
@@ -9570,7 +9988,7 @@ function createStatusView(deps) {
 			: h('span', { className: 'gbt-wtactions' },
 				h('button', { key: 'force', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', 'data-action': 'worktree-force-cleanup', 'data-path': entry.path, disabled: cleanupBusy, onClick: function () { cleanupUi.forceConfirm = entry.path; wtBump() } }, t('statusWtForceCleanup')))
 			} else {
-		actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate !== undefined ? wtReasonLabel(String(candidate.why)) : effective.probed !== true ? t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed') : t('statusWtPreflightFirst')))
+		actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate !== undefined ? wtReasonLabel(String(candidate.why)) : effective.probed !== true ? t(worktreeProbeState === 'loading' ? 'statusWtProbing' : worktreeProbeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed') : t('statusWtPreflightFirst')))
 			}
 			return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow gbt-deckwtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(effective.reason === undefined || effective.reason === null ? '' : effective.reason), 'data-wt-probed': effective.probed === true ? 'true' : 'false' },
 		h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
@@ -9598,7 +10016,7 @@ function createStatusView(deps) {
 				h('span', { className: 'gbt-deckpanelmeta', 'data-wt-summary': 'true' }, String(totalCount) + ' ' + t('statusWtTotal') + ' · ' + String(activeCount) + ' ' + t('statusWtActive') + ' · ' + String(safeCount) + ' ' + t('statusWtSafe') + ' · ' + String(confirmCount) + ' ' + t('statusWtConfirm')),
 			),
 			worktrees === null || worktrees === undefined || worktrees.available !== true
-				? h('div', { className: 'gbt-deckempty' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
+				? h('div', { className: 'gbt-deckempty', 'data-wt-empty': worktreeProbeState }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : worktreeProbeState === 'loading' || snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
 				: h('div', { className: 'gbt-deckwtview' },
 					h('div', { className: 'gbt-deckwtool' },
 						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'worktree-preflight', disabled: cleanupUi.pending === true, onClick: wtRunPreflight }, cleanupUi.pending === true ? t('statusWtPreflighting') : t('statusWtPreflight')),
@@ -9794,10 +10212,12 @@ function createStatusView(deps) {
 				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
 				h('div', { className: 'gbt-statusactions' },
 					h('span', { className: 'gbt-decklastscan' }, t('statusLastScan') + ' · ' + scanAgo),
-					// T-233: a plain load() only re-reads the board now; this control
-					// refreshes the PAGE it sits on, so it must also force the deferred
-					// metadata (agent tree / worktrees / environment / activity) to rebuild.
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load({ refresh: true }) } }, '↻ ' + t('refresh')),
+					// T-236: this control forces exactly the domains THIS PAGE reads through
+					// the store — the activity timeline and the worktree probe. It never
+					// calls load() (the board has its own 2.5 s cadence) and never forces
+					// /meta, so a refresh here cannot rebuild a host inventory nobody
+					// asked for.
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { refreshStatusDomains() } }, '↻ ' + t('refresh')),
 				),
 			),
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },

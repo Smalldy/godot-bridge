@@ -291,7 +291,11 @@ console.log('PASS  one shared store serializes decision answers (panel modal + s
   assert.equal(merged.environment.clean, true, 'the environment reading is merged from /meta')
   assert.equal(merged.roles.version, 1, 'the role config is merged from /meta')
   assert.equal(merged.archivedCount, 3, 'the archive count is merged from /meta')
-  assert.equal(merged.activityEvents.entries.length, 1, 'the activity timeline is merged from /meta')
+  // T-236: /meta's activityEvents is a COMPATIBILITY field for older panels. This
+  // client's timeline is the activity domain's, read on its own cursor — the
+  // cached metadata answer is never layered onto it.
+  assert.equal(merged.activityEvents, null, 'the /meta activity field is not absorbed into the timeline')
+  assert.equal(splitStore.domains.activity.state().entries.length, 0, 'the activity domain is still empty after /meta')
   assert.equal(merged.scope.light, false, 'the FULL scope replaces the light one')
   assert.equal(merged.scope.handoff.eligibility.takeover.ok, false, 'the full scope carries takeover eligibility')
   assert.equal(merged.metadata.errors !== undefined, true)
@@ -331,13 +335,24 @@ console.log('PASS  one shared store serializes decision answers (panel modal + s
   assert.ok(splitStore.getSnapshot().metadata.errors.message.indexOf('ECONNREFUSED') >= 0)
   console.log('PASS  T-210 a failed metadata request degrades only the deferred blocks')
 
-  // The activity cursor rides /meta (not /state), so the timeline stays incremental.
+  // T-236: the timeline no longer rides /meta at all — it has its own cursored
+  // endpoint and its own domain, so a metadata rebuild can never re-deliver (or
+  // skip) events.
   routes.set('/meta', fullMeta)
+  routes.set('/activity', { ok: true, project: '/repo', source: 'board', available: true, revision: 7, cursor: 'c1', nextCursor: 'c1', limit: 50, count: 1, total: 1, truncated: false, entries: [{ key: 'k1', at: '2024-01-01T00:00:00.000Z', kind: 'dispatch', taskId: 'T-1' }] })
   requests = []
   await splitStore.loadMeta({ refresh: true })
   const lastUrl = requests[requests.length - 1]
-  assert.ok(lastUrl.indexOf('/meta') === 0 && lastUrl.indexOf('activitySince=') > 0, 'the activity cursor rides /meta: ' + lastUrl)
-  console.log('PASS  T-210 the activity timeline stays incremental on its own endpoint')
+  assert.equal(lastUrl.indexOf('/activity'), -1, 'a metadata rebuild never requests the timeline: ' + lastUrl)
+  assert.equal(lastUrl.indexOf('activitySince='), -1, 'the activity cursor does not ride /meta: ' + lastUrl)
+  const activityResult = await splitStore.loadActivity()
+  assert.equal(activityResult.ok, true)
+  const activityUrl = requests[requests.length - 1]
+  assert.equal(activityUrl.indexOf('/activity'), 0, 'the timeline has its OWN endpoint: ' + activityUrl)
+  assert.equal(splitStore.getSnapshot().activityEvents.entries.length, 1, 'the activity domain projects onto the snapshot')
+  const cachedActivity = await splitStore.loadActivity()
+  assert.equal(cachedActivity.cached, true, 'a repeat poll inside the 5 s window is answered by the domain, not the host')
+  console.log('PASS  T-236 the activity timeline is its own cursored read, never a /meta layer')
 }
 
 // ── T-210 review: a project switch must never paint the old project's metadata ──
@@ -1132,6 +1147,343 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   // receipt, and task-center.cjs / decision-overlay.cjs pass it to their card.
   assert.equal(clockStore.domains.decisions.state().receivedAt, at30.decisionsReceivedAt, 'the snapshot projects the domain receipt')
   console.log('PASS  T-235 review the countdown baseline is the queue receipt, not the board poll')
+}
+
+// ── T-236: the activity timeline is a single-source, incremental domain ─────
+{
+  let now = 500000
+  const timedDeps = Object.assign({}, deps, { tcNow: () => now })
+  const requests = []
+  let boardSeq = 10
+  let failing = false
+  let page = null
+  const cursorOf = (key, at) => at + '|' + key
+  const pageOf = (entries, cursor, revision) => ({
+    ok: true,
+    project: '/repo',
+    source: 'board',
+    available: true,
+    revision: revision,
+    cursor: cursor,
+    nextCursor: cursor,
+    limit: 50,
+    count: entries.length,
+    total: entries.length,
+    truncated: false,
+    entries: entries,
+  })
+  const event = (key, at, kind, taskId) => ({ key: key, at: at, kind: kind, taskId: taskId })
+  const stateAnswer = (project) => ({ ok: true, full: true, project: project, projectRoot: project, counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } })
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => stateAnswer('/repo') }
+    if (text.indexOf('/activity') === 0) {
+      requests.push(text)
+      if (failing) return { json: async () => ({ ok: false, code: 'failed', message: 'timeline unavailable' }) }
+      return { json: async () => page }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const activityStore = createTaskStore((key) => key, timedDeps)
+  await activityStore.load()
+  page = pageOf([event('T-1@a@create', '2024-01-01T00:00:00.000Z', 'create', 'T-1')], cursorOf('T-1@a@create', '2024-01-01T00:00:00.000Z'), boardSeq)
+  const first = await activityStore.loadActivity()
+  assert.equal(first.ok, true)
+  assert.equal(requests.length, 1, 'the first timeline read asks the host once')
+  assert.equal(requests[0].indexOf('/activity'), 0, 'the timeline is its own endpoint, never /state or /meta: ' + requests[0])
+  let activityState = activityStore.domains.activity.state()
+  assert.equal(activityState.scope, '/repo', 'the activity domain names the project it describes')
+  assert.equal(activityState.cursor, '2024-01-01T00:00:00.000Z|T-1@a@create', 'the domain records the answer cursor')
+  assert.equal(activityState.revision, 10, 'the domain records the board revision it applied')
+  assert.equal(activityState.staleTime, 5000, 'the activity domain carries the 5 s staleTime')
+  assert.equal(activityStore.ACTIVITY_POLL_MS, 5000)
+  assert.equal(activityStore.getSnapshot().activityEvents.entries.length, 1, 'the domain projects onto the snapshot the status page reads')
+
+  // Inside the 5 s window a second poll (a re-mount, a second surface) is answered
+  // by the domain instead of the host.
+  now += 3000
+  const cached = await activityStore.loadActivity()
+  assert.equal(cached.cached, true)
+  assert.equal(requests.length, 1, 'no second request inside the 5 s window')
+
+  // Past the window the poll carries THIS client's cursor, so the read is
+  // incremental and the page is MERGED into the log (newest first).
+  now += 3000
+  boardSeq = 12
+  page = pageOf([event('T-2@b@dispatch', '2024-01-01T00:00:05.000Z', 'dispatch', 'T-2')], cursorOf('T-2@b@dispatch', '2024-01-01T00:00:05.000Z'), boardSeq)
+  await activityStore.loadActivity()
+  assert.equal(requests.length, 2)
+  assert.ok(requests[1].indexOf('cursor=' + encodeURIComponent('2024-01-01T00:00:00.000Z|T-1@a@create')) > 0, 'the poll asks only for events after the cursor: ' + requests[1])
+  activityState = activityStore.domains.activity.state()
+  assert.equal(activityState.entries.length, 2, 'the incremental page is merged into the log')
+  assert.equal(activityState.entries[0].key, 'T-2@b@dispatch', 'the log stays newest first')
+  assert.equal(activityState.revision, 12)
+
+  // A re-delivered event is deduped by key, and the cursor never moves backwards.
+  now += 6000
+  page = pageOf([event('T-1@a@create', '2024-01-01T00:00:00.000Z', 'create', 'T-1')], cursorOf('T-1@a@create', '2024-01-01T00:00:00.000Z'), 12)
+  await activityStore.loadActivity()
+  activityState = activityStore.domains.activity.state()
+  assert.equal(activityState.entries.length, 2, 'a re-delivered event is deduped by key')
+  assert.equal(activityState.cursor, '2024-01-01T00:00:05.000Z|T-2@b@dispatch', 'the cursor only moves forward')
+
+  // An answer derived from an OLDER board than the one shown is dropped instead
+  // of rewinding the log (a slow request).
+  now += 6000
+  page = pageOf([event('T-9@old@create', '2023-12-31T23:59:59.000Z', 'create', 'T-9')], cursorOf('T-9@old@create', '2023-12-31T23:59:59.000Z'), 9)
+  const staleAnswer = await activityStore.loadActivity()
+  assert.equal(staleAnswer.stale, true, 'an older board revision is discarded')
+  activityState = activityStore.domains.activity.state()
+  assert.equal(activityState.entries.length, 2, 'the stale answer never lands')
+  assert.equal(activityState.revision, 12)
+
+  // A failed poll keeps the last good log (degraded) and never becomes a board
+  // failure; the next good answer clears it.
+  now += 6000
+  failing = true
+  const failed = await activityStore.loadActivity()
+  assert.equal(failed.ok, false)
+  activityState = activityStore.domains.activity.state()
+  assert.equal(activityState.status, 'degraded')
+  assert.equal(activityState.entries.length, 2, 'a failed poll keeps the last good log')
+  assert.ok(activityState.lastGood !== null && activityState.lastGood.length === 2, 'lastGood survives a failed timeline read')
+  assert.equal(activityStore.getSnapshot().source, 'host', 'a timeline failure is never a board failure')
+  assert.equal(activityStore.getSnapshot().message, '')
+  failing = false
+  now += 6000
+  page = pageOf([], activityState.cursor, 13)
+  const recovered = await activityStore.loadActivity()
+  assert.equal(recovered.ok, true)
+  assert.equal(activityStore.domains.activity.state().status, 'ready')
+
+  // Generation guard: a forced refresh supersedes a routine request still in
+  // flight, so the superseded answer is discarded instead of landing.
+  const pending = []
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => stateAnswer('/repo') }
+    if (text.indexOf('/activity') === 0) return new Promise((resolve) => { pending.push((payload) => resolve({ json: async () => payload })) })
+    throw new Error('unexpected request: ' + text)
+  }
+  now += 6000
+  const routine = activityStore.loadActivity()
+  const forced = activityStore.refreshActivity()
+  assert.equal(pending.length, 2, 'the forced refresh does not join the routine flight')
+  pending[1](pageOf([event('T-3@c@submit', '2024-01-01T00:00:20.000Z', 'submit', 'T-3')], cursorOf('T-3@c@submit', '2024-01-01T00:00:20.000Z'), 14))
+  assert.equal((await forced).ok, true)
+  pending[0](pageOf([event('T-4@d@create', '2024-01-01T00:00:21.000Z', 'create', 'T-4')], cursorOf('T-4@d@create', '2024-01-01T00:00:21.000Z'), 15))
+  const routineResult = await routine
+  assert.equal(routineResult.stale, true, 'the superseded answer is dropped')
+  assert.equal(activityStore.domains.activity.state().entries.some((entry) => entry.key === 'T-4@d@create'), false, 'an abandoned generation never lands')
+
+  // A project switch clears the log AND the cursor: project A's events can never
+  // be painted onto project B.
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => stateAnswer('/repo-b') }
+    throw new Error('unexpected request: ' + text)
+  }
+  await activityStore.load()
+  activityState = activityStore.domains.activity.state()
+  assert.equal(activityState.scope, '/repo-b')
+  assert.equal(activityState.entries.length, 0, 'a project switch clears the log')
+  assert.equal(activityState.cursor, null, 'a project switch clears the cursor')
+  assert.equal(activityStore.getSnapshot().activityEvents, null, 'no old-project event survives the switch')
+  console.log('PASS  T-236 the activity domain is the one owner of the incremental timeline')
+}
+
+// ── T-236: the worktrees probe is one lazy, 30 s-stale domain ──────────────
+{
+  let now = 900000
+  const timedDeps = Object.assign({}, deps, { tcNow: () => now })
+  const requests = []
+  let failing = false
+  let answer = null
+  const mainEntry = { path: '/repo', type: 'main', active: true, probed: true, dirty: false, merged: true, safe: false, reason: 'active', probedAt: null }
+  const entryOf = (path, probed) => ({ path: path, type: 'task', branch: 'task/' + path.slice(path.lastIndexOf('/') + 1), head: 'abc1234', taskId: 'T-1', active: false, target: 'main', probed: probed, dirty: probed ? false : null, merged: probed ? true : null, safe: probed === true, reason: probed ? 'safe' : 'unprobed', probedAt: null })
+  const stateAnswer = { ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 1 }, tasks: [{ id: 'T-1', status: 'done', title: 'card' }], worktrees: { available: true, error: null, total: 1, active: 1, counts: { main: 1 }, worktrees: [mainEntry] }, metadata: { split: true, light: true, deferred: [] } }
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => stateAnswer }
+    if (text.indexOf('/worktrees') === 0) {
+      requests.push(text)
+      if (failing) return { json: async () => ({ ok: false, code: 'git-failed', message: 'git worktree failed' }) }
+      return { json: async () => answer }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const worktreeStore = createTaskStore((key) => key, timedDeps)
+  await worktreeStore.load()
+  // Before the lazy probe runs the page still has the inventory; the block says
+  // the probe has not run and the rows say they are unprobed.
+  assert.equal(worktreeStore.getSnapshot().worktrees.total, 1, 'the inventory is on screen before the probe')
+  assert.equal(worktreeStore.getSnapshot().worktrees.probe.status, 'idle')
+  assert.equal(worktreeStore.WORKTREES_STALE_MS, 30000)
+  assert.equal(worktreeStore.domains.worktrees.state().staleTime, 30000, 'the worktrees domain carries the 30 s staleTime')
+
+  const stalePaths = ['/repo/.worktrees/T-1-1']
+  answer = {
+    ok: true,
+    project: '/repo',
+    available: true,
+    error: null,
+    probedAt: '2024-01-01T00:00:00.000Z',
+    requested: stalePaths.slice(),
+    total: 2,
+    active: 1,
+    counts: { main: 1, task: 1 },
+    worktrees: [mainEntry, entryOf('/repo/.worktrees/T-1-1', true)],
+  }
+  const probed = await worktreeStore.loadWorktrees({ paths: stalePaths })
+  assert.equal(probed.ok, true)
+  assert.equal(requests.length, 1, 'the page asks for the probe once')
+  const worktreesState = worktreeStore.domains.worktrees.state()
+  assert.equal(worktreesState.scope, '/repo', 'the worktrees domain names the project it describes')
+  let block = worktreeStore.getSnapshot().worktrees
+  assert.equal(block.available, true)
+  assert.equal(block.total, 2, 'the numbers come from the one answer')
+  assert.equal(block.probe.status, 'ready')
+  assert.equal(block.worktrees.filter((entry) => entry.probed === true).length, 2, 'the rows carry their verdicts: the page has nothing to merge')
+
+  // Inside the 30 s window a re-mount (or a second surface) is answered by the
+  // domain, never by the host.
+  now += 10000
+  const cachedProbe = await worktreeStore.loadWorktrees({ paths: stalePaths })
+  assert.equal(cachedProbe.cached, true)
+  assert.equal(requests.length, 1, 'no second /worktrees inside 30 s')
+
+  // A cached answer only covers the rows it actually probed: asking about another
+  // checkout is a real request, not a false cache hit.
+  now += 1000
+  answer = Object.assign({}, answer, { requested: ['/repo/.worktrees/T-1-2'], worktrees: [mainEntry, entryOf('/repo/.worktrees/T-1-1', true), entryOf('/repo/.worktrees/T-1-2', true)] })
+  await worktreeStore.loadWorktrees({ paths: ['/repo/.worktrees/T-1-2'] })
+  assert.equal(requests.length, 2, 'an uncovered checkout is probed for real')
+
+  // The explicit refresh always asks the host, even inside the window; with no
+  // paths it probes every checkout and covers any row afterwards.
+  now += 1000
+  answer = Object.assign({}, answer, { requested: null })
+  await worktreeStore.refreshWorktrees()
+  assert.equal(requests.length, 3)
+  assert.equal(requests[2].indexOf('path='), -1, 'the explicit refresh probes every checkout')
+  now += 1000
+  const covered = await worktreeStore.loadWorktrees({ paths: ['/repo/.worktrees/T-1-1'] })
+  assert.equal(covered.cached, true, 'a whole-inventory answer covers any single row')
+
+  // Past the 30 s window a routine call asks again.
+  now += 31000
+  await worktreeStore.loadWorktrees({ paths: ['/repo/.worktrees/T-1-1'] })
+  assert.equal(requests.length, 4, 'past 30 s the probe is re-read')
+
+  // A failed probe keeps the last good block (the card never flashes empty).
+  failing = true
+  now += 31000
+  const failedProbe = await worktreeStore.refreshWorktrees()
+  assert.equal(failedProbe.ok, false)
+  assert.equal(worktreeStore.domains.worktrees.state().status, 'degraded')
+  assert.ok(worktreeStore.domains.worktrees.state().lastGood !== null && worktreeStore.domains.worktrees.state().lastGood.worktrees.length >= 2, 'the last good probe is kept')
+  assert.equal(worktreeStore.getSnapshot().worktrees.available, true, 'the card keeps rendering the last good rows')
+  assert.equal(worktreeStore.getSnapshot().worktrees.probe.status, 'error')
+  failing = false
+
+  // Generation guard: the forced refresh supersedes an in-flight routine probe,
+  // so the superseded answer is discarded.
+  const pending = []
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => stateAnswer }
+    if (text.indexOf('/worktrees') === 0) return new Promise((resolve) => { pending.push((payload) => resolve({ json: async () => payload })) })
+    throw new Error('unexpected request: ' + text)
+  }
+  now += 31000
+  const routine = worktreeStore.loadWorktrees({ paths: ['/repo/.worktrees/T-1-1'] })
+  const forced = worktreeStore.refreshWorktrees()
+  assert.equal(pending.length, 2, 'the forced refresh does not join the routine probe')
+  pending[1](Object.assign({}, answer, { requested: null, probedAt: '2024-01-01T00:00:30.000Z' }))
+  assert.equal((await forced).ok, true)
+  pending[0](Object.assign({}, answer, { requested: ['/repo/.worktrees/T-1-1'], probedAt: '2024-01-01T00:00:29.000Z' }))
+  const routineProbe = await routine
+  assert.equal(routineProbe.stale, true, 'the superseded probe is dropped')
+  block = worktreeStore.getSnapshot().worktrees
+  assert.equal(block.probedAt, '2024-01-01T00:00:30.000Z', 'only the newest probe describes the card')
+
+  // A project switch clears the probe: project A's verdicts never describe B.
+  // (The new project's light answer carries the DEFERRED stub, as a real host's
+  // light first paint does — never the old project's rows.)
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => ({ ok: true, full: true, project: '/repo-b', projectRoot: '/repo-b', counts: { total: 0 }, tasks: [], worktrees: { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] }, metadata: { split: true, light: true, deferred: [] } }) }
+    throw new Error('unexpected request: ' + text)
+  }
+  await worktreeStore.load()
+  const cleared = worktreeStore.domains.worktrees.state()
+  assert.equal(cleared.scope, '/repo-b')
+  assert.equal(cleared.data, null, 'the probe is dropped on a project switch')
+  assert.equal(worktreeStore.getSnapshot().worktrees === null || worktreeStore.getSnapshot().worktrees.available !== true, true, 'the old block is never painted onto the new project')
+  console.log('PASS  T-236 the worktrees domain owns the lazy probe with a 30 s staleTime')
+}
+
+// ── T-236: the activity cadence is ref-counted and independent ─────────────
+{
+  const originalSetInterval = globalThis.setInterval
+  const originalClearInterval = globalThis.clearInterval
+  let intervals = 0
+  let cleared = 0
+  globalThis.setInterval = (fn, ms) => { intervals += 1; return intervals }
+  globalThis.clearInterval = () => { cleared += 1 }
+  const activityRequests = []
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) }
+    if (text.indexOf('/activity') === 0) {
+      activityRequests.push(text)
+      return { json: async () => ({ ok: true, project: '/repo', source: 'board', available: true, revision: 1, cursor: 'c1', nextCursor: 'c1', count: 0, total: 0, truncated: false, entries: [] }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const cadenceStore = createTaskStore((key) => key, deps)
+  await cadenceStore.load()
+  assert.equal(cadenceStore.startActivityPolling(), 1)
+  assert.equal(intervals, 1, 'the first surface starts the only activity timer')
+  assert.equal(cadenceStore.startActivityPolling(), 2, 'two mounted surfaces share ONE cadence')
+  assert.equal(intervals, 1, 'the second surface starts no second timer')
+  await tick()
+  assert.equal(activityRequests.length, 1, 'the cadence reads the timeline once on start')
+  assert.equal(cadenceStore.stopActivityPolling(), 1, 'the cadence survives while one surface remains')
+  assert.equal(cleared, 0)
+  assert.equal(cadenceStore.stopActivityPolling(), 0)
+  assert.equal(cleared, 1, 'the last surface leaving stops the timer')
+
+  // A status page mounted BEFORE the first board answer is seeded by that answer
+  // instead of waiting a whole 5 s tick.
+  const seedStore = createTaskStore((key) => key, deps)
+  let releaseState = null
+  let activityCalls = 0
+  globalThis.fetch = (url) => {
+    const text = String(url)
+    if (text.indexOf('/state') === 0) {
+      return new Promise((resolve) => {
+        releaseState = () => resolve({ json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', counts: { total: 0 }, tasks: [], metadata: { split: true, light: true, deferred: [] } }) })
+      })
+    }
+    if (text.indexOf('/activity') === 0) {
+      activityCalls += 1
+      return { json: async () => ({ ok: true, project: '/repo', source: 'board', available: true, revision: 1, cursor: 'c1', nextCursor: 'c1', count: 0, total: 0, truncated: false, entries: [] }) }
+    }
+    throw new Error('unexpected request: ' + text)
+  }
+  const coldLoad = seedStore.load()
+  seedStore.startActivityPolling()
+  await tick()
+  assert.equal(activityCalls, 0, 'no timeline request before a project is known')
+  releaseState()
+  await coldLoad
+  await tick()
+  assert.equal(activityCalls, 1, 'the first board answer seeds the mounted timeline')
+  seedStore.stopActivityPolling()
+  globalThis.setInterval = originalSetInterval
+  globalThis.clearInterval = originalClearInterval
+  console.log('PASS  T-236 the activity cadence is ref-counted by the mounted status page')
 }
 
 const poll = globalThis.setInterval

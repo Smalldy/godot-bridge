@@ -70,7 +70,13 @@ function createStatusView(deps) {
 			const dependency = task.dependency === null || task.dependency === undefined ? null : task.dependency
 			return dependency === null || dependency.state !== 'ready'
 		})
+		// T-236: ONE block. The store projects the inventory (/meta) and the lazy
+		// probe (/worktrees) into it from the worktrees domain, so this page renders
+		// rows that already carry their verdict — it never merges two answers and
+		// never calls the endpoint itself.
 		const worktrees = snapshot.worktrees
+		const worktreeProbe = worktrees !== null && worktrees !== undefined && worktrees.probe !== null && typeof worktrees.probe === 'object' ? worktrees.probe : null
+		const worktreeProbeState = worktreeProbe === null ? 'idle' : typeof worktreeProbe.status === 'string' ? worktreeProbe.status : 'idle'
 		const activity = snapshot.activity
 		// T-111: the sweep is telemetry, not an event.
 		const lastSweep = snapshot.lastSweep !== null && snapshot.lastSweep !== undefined && typeof snapshot.lastSweep.at === 'string' ? snapshot.lastSweep : null
@@ -470,9 +476,8 @@ function createStatusView(deps) {
 		const wtLabelOf = function (entry) { return typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : wtBaseOf(entry.path) }
 		const cleanupUi = worktreeCleanupUi
 		const wtBump = function () { setCleanupTick(function (count) { return count + 1 }) }
-		const worktreeSignature = wtList.map(function (entry) {
-			return String(entry.path) + ':' + (entry.active === true ? 'a' : '-')
-		}).join('|')
+		const stalePaths = staleWts.map(function (entry) { return String(entry.path) })
+		const staleSignature = stalePaths.join('|')
 		const wtApplyPreflight = function (outcome) {
 			const payload = outcome !== null && outcome !== undefined && outcome.ok === true && outcome.payload !== null && outcome.payload !== undefined ? outcome.payload : null
 			cleanupUi.pending = false
@@ -495,27 +500,28 @@ function createStatusView(deps) {
 			wtBump()
 			void store.send('worktreesCleanup', { dryRun: true }, { quiet: true }).then(wtApplyPreflight)
 		}
-		// T-146: /state only carries the inventory. Probe the stale checkouts
-		// lazily (never an automatic cleanup dry run) when the card is shown.
+		// T-146/T-236: the dirty/merged verdicts are LAZY. The WORKTREES DOMAIN owns
+		// that read — it probes only the checkouts this card shows, answers a repeat
+		// call from its 30 s cache when the cached answer covers those rows, and
+		// single-flights the request. The page therefore never fires the endpoint
+		// itself and never stores a second copy of the answer. Never an automatic
+		// cleanup dry run.
 		React.useEffect(function () {
-			if (worktreeSignature === '') return
-			if (worktreeCleanupUi.probeState === 'loading') return
-			if (worktreeCleanupUi.probedSignature === worktreeSignature) return
-			worktreeCleanupUi.probedSignature = worktreeSignature
-			worktreeCleanupUi.probeState = 'loading'
-			wtBump()
-			const paths = staleWts.map(function (entry) { return entry.path })
-			void store.loadWorktrees(paths).then(function (payload) {
-		if (payload !== null && payload !== undefined && payload.ok === true) {
-			worktreeCleanupUi.probe = payload
-			worktreeCleanupUi.probeState = 'ready'
-		} else {
-			worktreeCleanupUi.probe = null
-			worktreeCleanupUi.probeState = 'error'
-		}
-		wtBump()
-			})
-		}, [worktreeSignature])
+			if (staleSignature === '') return
+			if (typeof store.loadWorktrees !== 'function') return
+			void store.loadWorktrees({ paths: staleSignature.split('|') })
+		}, [staleSignature])
+		// T-236: the activity timeline is its own domain with its own 5 s cadence.
+		// This page REGISTERS while mounted (the store ref-counts, so a remount never
+		// doubles the cadence) and releases on the way out; the timeline itself is
+		// never requested by a render.
+		React.useEffect(function () {
+			if (typeof store.startActivityPolling !== 'function') return undefined
+			store.startActivityPolling()
+			return function () {
+				if (typeof store.stopActivityPolling === 'function') store.stopActivityPolling()
+			}
+		}, [])
 		const wtExecute = function (paths, force) {
 			if (cleanupUi.executing === true || Array.isArray(paths) === false || paths.length === 0) return
 			const body = { dryRun: false, paths: paths }
@@ -531,24 +537,35 @@ function createStatusView(deps) {
 			cleanupUi.result = payload
 			cleanupUi.preflight = null
 			cleanupUi.selected = {}
-			cleanupUi.probe = null
-			cleanupUi.probeState = 'idle'
-			cleanupUi.probedSignature = null
-			void store.load()
+			// T-236: the cleanup CHANGED the checkouts, so the worktrees domain is
+			// re-probed explicitly (a blanket store.load() re-read the board, which
+			// has nothing to do with the rows that just disappeared).
+			if (typeof store.refreshWorktrees === 'function') void store.refreshWorktrees()
 		} else {
 			cleanupUi.result = { ok: false, code: payload !== null && typeof payload.code === 'string' ? payload.code : 'worktrees-cleanup-failed' }
 		}
 		wtBump()
 			})
 		}
+		/**
+		 * T-236: the page's explicit refresh — force exactly the domains THIS page
+		 * reads through the store: the activity timeline and the worktree probe.
+		 *
+		 * It is deliberately not load({ refresh: true }): the board keeps its own
+		 * 2.5 s cadence and /meta its own TTL, and forcing them from here rebuilt a
+		 * host inventory nobody asked for on every click.
+		 */
+		const refreshStatusDomains = function () {
+			if (typeof store.refreshActivity === 'function') void store.refreshActivity()
+			if (typeof store.refreshWorktrees === 'function') void store.refreshWorktrees()
+		}
 		const preflightCandidates = cleanupUi.preflight !== null && Array.isArray(cleanupUi.preflight.candidates) ? cleanupUi.preflight.candidates : []
 		const candidateByPath = {}
 		preflightCandidates.forEach(function (candidate) { if (typeof candidate.path === 'string') candidateByPath[candidate.path] = candidate })
-		const probeEntries = cleanupUi.probe !== null && Array.isArray(cleanupUi.probe.worktrees) ? cleanupUi.probe.worktrees : []
-		const probeByPath = {}
-		probeEntries.forEach(function (entry) { if (entry !== null && typeof entry === 'object' && typeof entry.path === 'string') probeByPath[entry.path] = entry })
-		const wtEffective = function (entry) { const probed = probeByPath[entry.path]; return probed === undefined ? entry : Object.assign({}, entry, probed) }
-		const effectiveStale = staleWts.map(wtEffective)
+		// T-236: "probed" is simply "the domain has a verdict for this checkout".
+		// It rides on the row itself now instead of being patched in from a second
+		// local probe answer.
+		const effectiveStale = staleWts
 		const safeCount = effectiveStale.filter(function (entry) { return entry.probed === true && entry.safe === true }).length
 		const confirmCount = effectiveStale.filter(function (entry) { return entry.probed === true && entry.safe !== true }).length
 		const activeCount = worktrees !== null && worktrees !== undefined && Number.isFinite(worktrees.active) ? worktrees.active : activeWts.length + (mainWt === undefined ? 0 : 1)
@@ -569,7 +586,7 @@ function createStatusView(deps) {
 			// T-146: dirty/merged arrive from the lazy probe, not /state.
 			if (entry.probed !== true) {
 		return h('span', { className: 'gbt-wtbadges', 'data-wt-probed': 'false' },
-			h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed')))
+			h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, t(worktreeProbeState === 'loading' ? 'statusWtProbing' : worktreeProbeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed')))
 			}
 			const dirty = entry.dirty === true
 			const merged = entry.merged === true
@@ -591,7 +608,7 @@ function createStatusView(deps) {
 		const mainRow = mainWt === undefined ? null : wtRowBase('wt-main', mainWt, 'main', t('statusWtActiveState'))
 		const activeRows = activeWts.map(function (entry) { return wtRowBase('wt-active-' + String(entry.path), entry, 'active', t('statusWtActiveState')) })
 		const staleRows = staleWts.map(function (entry) {
-			const effective = wtEffective(entry)
+			const effective = entry
 			const candidate = candidateByPath[entry.path]
 			const safeEligible = candidate !== undefined && candidate.why === 'safe'
 			const forceEligible = candidate !== undefined && (candidate.why === 'dirty' || candidate.why === 'unmerged')
@@ -609,7 +626,7 @@ function createStatusView(deps) {
 			: h('span', { className: 'gbt-wtactions' },
 				h('button', { key: 'force', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', 'data-action': 'worktree-force-cleanup', 'data-path': entry.path, disabled: cleanupBusy, onClick: function () { cleanupUi.forceConfirm = entry.path; wtBump() } }, t('statusWtForceCleanup')))
 			} else {
-		actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate !== undefined ? wtReasonLabel(String(candidate.why)) : effective.probed !== true ? t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed') : t('statusWtPreflightFirst')))
+		actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate !== undefined ? wtReasonLabel(String(candidate.why)) : effective.probed !== true ? t(worktreeProbeState === 'loading' ? 'statusWtProbing' : worktreeProbeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed') : t('statusWtPreflightFirst')))
 			}
 			return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow gbt-deckwtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(effective.reason === undefined || effective.reason === null ? '' : effective.reason), 'data-wt-probed': effective.probed === true ? 'true' : 'false' },
 		h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
@@ -637,7 +654,7 @@ function createStatusView(deps) {
 				h('span', { className: 'gbt-deckpanelmeta', 'data-wt-summary': 'true' }, String(totalCount) + ' ' + t('statusWtTotal') + ' · ' + String(activeCount) + ' ' + t('statusWtActive') + ' · ' + String(safeCount) + ' ' + t('statusWtSafe') + ' · ' + String(confirmCount) + ' ' + t('statusWtConfirm')),
 			),
 			worktrees === null || worktrees === undefined || worktrees.available !== true
-				? h('div', { className: 'gbt-deckempty' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
+				? h('div', { className: 'gbt-deckempty', 'data-wt-empty': worktreeProbeState }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : worktreeProbeState === 'loading' || snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
 				: h('div', { className: 'gbt-deckwtview' },
 					h('div', { className: 'gbt-deckwtool' },
 						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'worktree-preflight', disabled: cleanupUi.pending === true, onClick: wtRunPreflight }, cleanupUi.pending === true ? t('statusWtPreflighting') : t('statusWtPreflight')),
@@ -833,10 +850,12 @@ function createStatusView(deps) {
 				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
 				h('div', { className: 'gbt-statusactions' },
 					h('span', { className: 'gbt-decklastscan' }, t('statusLastScan') + ' · ' + scanAgo),
-					// T-233: a plain load() only re-reads the board now; this control
-					// refreshes the PAGE it sits on, so it must also force the deferred
-					// metadata (agent tree / worktrees / environment / activity) to rebuild.
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load({ refresh: true }) } }, '↻ ' + t('refresh')),
+					// T-236: this control forces exactly the domains THIS PAGE reads through
+					// the store — the activity timeline and the worktree probe. It never
+					// calls load() (the board has its own 2.5 s cadence) and never forces
+					// /meta, so a refresh here cannot rebuild a host inventory nobody
+					// asked for.
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { refreshStatusDomains() } }, '↻ ' + t('refresh')),
 				),
 			),
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },

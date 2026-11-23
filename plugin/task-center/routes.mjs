@@ -31,6 +31,10 @@ export const TASK_PATH = ROUTE_PREFIX + '/task'
 export const LIST_PATH = ROUTE_PREFIX + '/list'
 /** T-146: lazy dirty/merged probe for worktrees (never returns a snapshot). */
 export const WORKTREES_PATH = ROUTE_PREFIX + '/worktrees'
+// T-236: the activity timeline on its OWN cursor. It is a read, not part of
+// /meta: a cursored answer can never be served from a shared build cache, so a
+// client asks this endpoint for exactly "what is new since my cursor".
+export const ACTIVITY_PATH = ROUTE_PREFIX + '/activity'
 
 const MAX_BODY_BYTES = 256 * 1024
 
@@ -416,6 +420,37 @@ export function registerTaskRoutes(ctx, options) {
     }
   }
 
+  /**
+   * T-236: the activity timeline on its own request.
+   *
+   * The same project rules as /state and /meta (session resolution, explicit
+   * pin), so the timeline can never describe a different project than the board
+   * and the inventory do. ?cursor= (or the older ?since= spelling) is the
+   * caller's last seen event; ?limit= bounds the page.
+   */
+  async function handleActivity(req, res) {
+    try {
+      const sessionId = sessionFromRequest(req, null)
+      const target = await resolveProject(req, null, sessionId)
+      if (target.failed !== undefined) {
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {}, resolvedFrom: 'unbound' })
+        return
+      }
+      const project = target.root
+      state.noteProject(project, sessionId)
+      const url = queryOf(req)
+      const get = (name) => (url === null ? null : url.searchParams.get(name))
+      const cursorRaw = get('cursor') === null ? get('since') : get('cursor')
+      const limitRaw = get('limit')
+      sendJson(res, 200, await api.activity(project, {
+        cursor: cursorRaw === null || cursorRaw === '' ? null : String(cursorRaw),
+        limit: limitRaw === null || limitRaw === '' || !Number.isFinite(Number(limitRaw)) ? undefined : Number(limitRaw),
+      }))
+    } catch (error) {
+      sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
+    }
+  }
+
   async function handleWorktrees(req, res) {
     try {
       const sessionId = sessionFromRequest(req, null)
@@ -479,6 +514,7 @@ export function registerTaskRoutes(ctx, options) {
     ctx.webServer.register({ kind: 'exact', path: ACTION_PATH, handler: handleAction }),
     ctx.webServer.register({ kind: 'exact', path: TASK_PATH, handler: handleTask }),
     ctx.webServer.register({ kind: 'exact', path: LIST_PATH, handler: handleList }),
+    ctx.webServer.register({ kind: 'exact', path: ACTIVITY_PATH, handler: handleActivity }),
     ctx.webServer.register({ kind: 'exact', path: WORKTREES_PATH, handler: handleWorktrees }),
     ctx.webServer.register({ kind: 'exact', path: DIAGNOSTICS_PATH, handler: handleDiagnostics }),
   ]

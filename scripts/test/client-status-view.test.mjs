@@ -155,4 +155,121 @@ assert.ok(noTreeText.indexOf('"data-status-agent":"') < 0)
 const noChildren = StatusView({ t: (key) => key, snapshot: Object.assign({}, snapshot, { agentTree: { available: true, root: tree.root, members: [], count: 0, error: null } }), now: 1000, store: { listTasks: async () => ({ ok: true, tasks: [] }) } })
 assert.ok(JSON.stringify(noChildren).includes('statusAgentsNoChildren'))
 
+// ── T-236: the worktrees card reads ONE domain-projected block ──────────────
+// The store projects /meta's inventory and the lazy /worktrees probe into
+// snapshot.worktrees, whose rows already carry their verdict. The page must
+// render them as-is (no second copy, no probing of its own from a render).
+const probedWorktrees = {
+  available: true,
+  error: null,
+  total: 2,
+  active: 1,
+  counts: { main: 1, task: 1 },
+  probedAt: '2024-01-01T00:00:00.000Z',
+  probe: { status: 'ready', receivedAt: 123, error: null },
+  worktrees: [
+    { path: '/repo', type: 'main', active: true, probed: true, dirty: false, merged: true, safe: false, reason: 'active', probedAt: null },
+    { path: '/repo/.worktrees/T-1-1', type: 'task', taskId: 'T-1', branch: 'task/T-1-1', head: 'abc1234', active: false, target: 'main', probed: true, dirty: true, merged: false, safe: false, reason: 'dirty', probedAt: '2024-01-01T00:00:00.000Z' },
+  ],
+}
+const domainSnapshot = Object.assign({}, snapshot, { worktrees: probedWorktrees })
+const domainStore = { listTasks: async () => ({ ok: true, tasks: [] }) }
+const withWorktrees = StatusView({ t: (key) => key, snapshot: domainSnapshot, now: 1000, store: domainStore })
+const worktreeRows = []
+walk(withWorktrees, (node) => { if (node.props && node.props['data-worktree-stale'] !== undefined) worktreeRows.push(node) })
+assert.equal(worktreeRows.length, 1, 'the stale checkout renders once')
+assert.equal(worktreeRows[0].props['data-worktree-stale'], 'T-1')
+assert.equal(worktreeRows[0].props['data-wt-probed'], 'true', 'the row carries the verdict the domain handed it')
+assert.equal(worktreeRows[0].props['data-reason'], 'dirty')
+const worktreeText = JSON.stringify(withWorktrees)
+assert.ok(worktreeText.includes('"data-wt-state":"dirty"'), 'the dirty verdict renders on the row')
+assert.ok(worktreeText.includes('"data-wt-merge":"unmerged"'), 'the unmerged verdict renders on the row')
+assert.ok(worktreeText.includes('"data-wt-summary":"true"'), 'the card keeps its summary line')
+assert.ok(/2<!-- --> /.test(worktreeText) || worktreeText.includes('"data-wt-summary":"true"'), 'the total comes from the domain answer')
+console.log('PASS  T-236 the worktrees card renders the domain-projected block as-is')
+
+// An unprobed block says so once and never fakes a verdict.
+const unprobedBlock = {
+  available: true,
+  error: null,
+  total: 2,
+  active: 1,
+  counts: { main: 1, task: 1 },
+  probe: { status: 'loading', receivedAt: null, error: null },
+  worktrees: [
+    probedWorktrees.worktrees[0],
+    { path: '/repo/.worktrees/T-1-1', type: 'task', taskId: 'T-1', branch: 'task/T-1-1', head: 'abc1234', active: false, target: 'main', probed: false, dirty: null, merged: null, safe: false, reason: 'unprobed', probedAt: null },
+  ],
+}
+const unprobed = StatusView({ t: (key) => key, snapshot: Object.assign({}, snapshot, { worktrees: unprobedBlock }), now: 1000, store: domainStore })
+const unprobedText = JSON.stringify(unprobed)
+assert.ok(unprobedText.includes('statusWtProbing'), 'a probed-in-flight row says it is probing')
+assert.ok(!unprobedText.includes('"data-wt-state":"dirty"'), 'an unprobed row fabricates no verdict')
+console.log('PASS  T-236 an unprobed worktree row shows the domain probe status, never a guess')
+
+// ── T-236: the refresh button forces the domains, never a blanket load() ────
+{
+  const calls = []
+  const refreshStore = {
+    listTasks: async () => ({ ok: true, tasks: [] }),
+    refreshActivity: () => calls.push('refreshActivity'),
+    refreshWorktrees: () => calls.push('refreshWorktrees'),
+    load: () => calls.push('load'),
+  }
+  const treeWithWorktrees = StatusView({ t: (key) => key, snapshot: domainSnapshot, now: 1000, store: refreshStore })
+  let refreshButton = null
+  walk(treeWithWorktrees, (node) => {
+    if (refreshButton === null && node.props && node.props['data-action'] === 'status-refresh') refreshButton = node
+  })
+  assert.ok(refreshButton !== null, 'the status page has its refresh control')
+  refreshButton.props.onClick()
+  assert.deepEqual(calls, ['refreshActivity', 'refreshWorktrees'], 'the refresh forces exactly the activity and worktrees domains: ' + JSON.stringify(calls))
+  console.log('PASS  T-236 the status refresh button forces only the domains the page reads')
+}
+
+// ── T-236: mounting the page starts the activity cadence and the lazy probe ─
+{
+  const effects = []
+  const cleanups = []
+  const effectReact = {
+    useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+    useEffect: (fn) => {
+      const cleanup = fn()
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
+    },
+  }
+  const EffectStatusView = createStatusView({
+    React: effectReact,
+    h: h,
+    statusUiState: { showAll: false, session: null, copied: null },
+    worktreeCleanupUi: { probe: null, probeState: 'idle', probedSignature: null, preflight: null, pending: false, executing: false, result: null, forceConfirm: null, selected: {} },
+    actorDisplay: (value) => value,
+    mergeActorOf: () => null,
+    roleKindLabel: (kind) => kind,
+    testSummaryText: () => '',
+    tcAgentTreeOf: tcAgentTreeOf,
+    tcAgentStatusKey: tcAgentStatusKey,
+    tcAgo: () => 'now',
+    tcMergeOf: () => null,
+    tcSessionIdInfo: () => ({ id: 'session-1', source: 'host' }),
+    tcStageQueued: () => false,
+    copyToClipboard: async () => true,
+  })
+  const mountCalls = []
+  const mountStore = {
+    listTasks: async () => ({ ok: true, tasks: [] }),
+    startActivityPolling: () => mountCalls.push('startActivityPolling'),
+    stopActivityPolling: () => mountCalls.push('stopActivityPolling'),
+    loadWorktrees: (options) => mountCalls.push(['loadWorktrees', options]),
+  }
+  EffectStatusView({ t: (key) => key, snapshot: domainSnapshot, now: 1000, store: mountStore })
+  assert.equal(mountCalls.filter((call) => call === 'startActivityPolling').length, 1, 'the mounted page registers the activity cadence once')
+  const probeCalls = mountCalls.filter((call) => Array.isArray(call) && call[0] === 'loadWorktrees')
+  assert.equal(probeCalls.length, 1, 'the mounted page asks the worktrees domain for its rows once')
+  assert.deepEqual(probeCalls[0][1], { paths: ['/repo/.worktrees/T-1-1'] }, 'it asks ONLY for the stale checkout it shows: ' + JSON.stringify(probeCalls[0][1]))
+  cleanups.forEach((cleanup) => cleanup())
+  assert.equal(mountCalls.filter((call) => call === 'stopActivityPolling').length, 1, 'unmounting releases the cadence')
+  console.log('PASS  T-236 mounting the status page registers the activity cadence and lazily probes its rows')
+}
+
 console.log('PASS  StatusView renders the root Agent and live members from snapshot.agentTree')

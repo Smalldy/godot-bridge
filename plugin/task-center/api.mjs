@@ -2229,7 +2229,22 @@ export function createApi(ctx, options) {
       if (cached === null) return Object.assign({}, worktree, { probed: false, dirty: null, merged: null, safe: false, reason: 'unprobed', probedAt: null })
       return Object.assign({}, worktree, { probed: true, dirty: cached.dirty, merged: cached.merged, safe: cached.safe, reason: cached.reason, probedAt: new Date(cached.at).toISOString() })
     })
-    return { ok: true, project: projectPath, probedAt: new Date(nowAfter).toISOString(), requested: requested === null ? null : Array.from(requested), worktrees: worktrees }
+    // T-236: the probe answer carries the inventory numbers too. The status card
+    // then reads ONE block (this one) instead of combining /meta's inventory with
+    // this route's probes — two answers with different freshness describing the
+    // same checkouts.
+    return {
+      ok: true,
+      project: projectPath,
+      available: true,
+      error: null,
+      probedAt: new Date(nowAfter).toISOString(),
+      requested: requested === null ? null : Array.from(requested),
+      total: inventory.total,
+      active: inventory.active,
+      counts: inventory.counts,
+      worktrees: worktrees,
+    }
   }
   async function worktreesProbe(projectPath, input) {
     const read = await readBoardOrFail(projectPath)
@@ -3948,6 +3963,58 @@ export function createApi(ctx, options) {
       nextStep: nextStep,
       errors: errors,
     }
+  }
+
+  /**
+   * T-236: the activity timeline as its OWN read.
+   *
+   * The timeline is DERIVED from the board at request time (T-111) and carries a
+   * cursor, so it can never be folded into a cached metadata build: the answer
+   * depends on what THIS caller already saw. That is why it has its own entry
+   * point now — the client's activity domain asks exactly one question ("what is
+   * new after this cursor, at most `limit` events?") and /meta keeps its
+   * activityEvents field only as a compatibility window for older panels.
+   *
+   *   cursor/since  the composite "<at>|<key>" of the last event the caller saw
+   *   limit         page size (1..200, default 50) — the OLDEST new events first,
+   *                 so a burst larger than one page is delivered across polls
+   *   revision      the board seq the answer was derived from: a monotonic
+   *                 project revision, so a slow answer describing an older board
+   *                 can be discarded instead of moving the cursor backwards
+   */
+  async function activityTimeline(projectPath, options) {
+    const opts = options === undefined || options === null ? {} : options
+    projectPath = resolve(projectPath)
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const board = read.board
+    const projectRef = projectRefOf(projectPath)
+    const cursorRaw = typeof opts.cursor === 'string' && opts.cursor !== '' ? opts.cursor : typeof opts.since === 'string' && opts.since !== '' ? opts.since : null
+    const timeline = boardTimeline(board, {
+      since: cursorRaw,
+      limit: Number.isFinite(opts.limit) ? opts.limit : undefined,
+    })
+    return ok({
+      project: projectPath,
+      projectId: projectRef.id,
+      projectRoot: projectRef.root,
+      source: 'board',
+      available: timeline.available,
+      revision: Number.isFinite(board.seq) ? board.seq : null,
+      since: timeline.since,
+      cursor: timeline.cursor,
+      // The cursor to send on the NEXT request. It equals the cursor of the
+      // newest event in this page (or the request's own cursor when the page was
+      // empty), so a client never has to re-derive it from the entries.
+      nextCursor: timeline.cursor,
+      limit: timeline.limit,
+      perTask: timeline.perTask,
+      count: timeline.count,
+      total: timeline.total,
+      truncated: timeline.truncated,
+      entries: timeline.entries,
+      serverTime: new Date(clock()).toISOString(),
+    })
   }
 
   /**
@@ -7544,6 +7611,10 @@ export function createApi(ctx, options) {
     // T-210: the deferred half of the snapshot, served independently so the
     // first paint and the header never wait for a host inventory.
     metadata: metadata,
+    // T-236: the activity timeline is its own read (its cursor is per caller, so
+    // it can never be part of the cached /meta build). Named apart from the
+    // in-memory host activity ring, which is a different thing.
+    activity: activityTimeline,
     worktrees: worktreesProbe,
     taskDetail: taskDetail,
     taskList: taskList,
