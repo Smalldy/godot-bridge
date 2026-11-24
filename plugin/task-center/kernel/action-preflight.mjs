@@ -17,11 +17,13 @@ export function createActionPreflight(deps) {
   const failure = deps.failure
 
   async function run(action, source, context, projectPath, now) {
-    // Any activity by the assignee renews its lease and file locks, so the
-    // heartbeat runs ONCE here, before the action, for every action an agent can
-    // call. Routing it through one place is what keeps 'lock' and 'unlock' (which
-    // never write the board and used to bypass mutate()) from silently drifting
-    // into expiry, and it stops an action from renewing twice.
+    // Any activity by the assignee heartbeats its file locks and, once the lease
+    // is inside its renewal window, the board lease too (T-238: a fresh lease is
+    // not rewritten at all). The heartbeat runs ONCE here, before the action, for
+    // every action an agent can call. Routing it through one place is what keeps
+    // 'lock' and 'unlock' (which never write the board and used to bypass mutate())
+    // from silently drifting into expiry, and it stops an action from renewing
+    // twice.
     const owner = ownerOf(context)
     if (owner !== null) await heartbeat(projectPath, owner)
     const stopped = await stoppedTaskRefusal(projectPath, action, source, context, owner)

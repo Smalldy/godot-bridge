@@ -227,6 +227,60 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   console.log('PASS  T-232 the cache cannot weaken the CAS: the retry reads the file and the answer is what landed')
 }
 
+// ── the T-238 write shapes: a lease-only write and a declined renewal ───────
+// The heartbeat only writes when a lease is inside its renewal window, and then
+// it moves just leaseUntil/updatedAt on the due cards. Two board-level guarantees
+// back that: a lease-only write still refreshes the memo with what it wrote, and a
+// mutator that declines (nothing is due by the time the write runs) touches NOTHING
+// — the file keeps its identity and the memo keeps serving it.
+{
+  const fs = countingFs()
+  const stale = new Date('2026-03-01T00:00:00.000Z').toISOString()
+  const renewed = new Date('2026-03-01T00:30:00.000Z').toISOString()
+  const running = (id, lease, updated) => ({ id: id, title: 'running', status: 'running', assignee: { name: 'w', session: 's' }, leaseUntil: lease, updatedAt: updated })
+  seedBoard(fs, PROJECT, textOf([running('T-1', stale, stale)], 2))
+  const before = await read(fs)
+  const written = await updateBoard(
+    { fs: fs },
+    {
+      projectPath: PROJECT,
+      now: Date.parse(renewed),
+      // updateBoard's mutator returns the BOARD itself (state.apply wraps this in
+      // the model's {ok, board} envelope); only the due card's lease moves.
+      mutate: function (board) {
+        return Object.assign({}, board, {
+          tasks: board.tasks.map((task) => Object.assign({}, task, { leaseUntil: renewed, updatedAt: renewed })),
+        })
+      },
+    },
+  )
+  const after = await read(fs)
+  check(
+    'T-238 a lease-only write is answered by the memo of what was written (new lease, no decode)',
+    before.cached === false && written.ok === true && after.cached === true && after.board.tasks[0].leaseUntil === renewed && after.board.tasks[0].updatedAt === renewed && fs.counts.readText === 2,
+    JSON.stringify({ cached: after.cached, lease: after.board.tasks[0].leaseUntil, reads: fs.counts.readText }),
+  )
+
+  // The renewal declines when the board moved on between its read and the write
+  // (nothing due any more). That must not rewrite a no-op board.
+  const quietText = fs.files.get(boardPath(PROJECT)).text
+  const quietVersion = fs.files.get(boardPath(PROJECT)).version
+  const declined = await updateBoard({ fs: fs }, { projectPath: PROJECT, mutate: () => null })
+  const stillQuiet = await read(fs)
+  check(
+    'T-238 a declined renewal writes NOTHING and leaves the memo alone',
+    declined.ok === false &&
+      declined.code === 'aborted' &&
+      fs.counts.writeText === 1 &&
+      fs.files.get(boardPath(PROJECT)).text === quietText &&
+      fs.files.get(boardPath(PROJECT)).version === quietVersion &&
+      stillQuiet.cached === true &&
+      stillQuiet.board.tasks[0].leaseUntil === renewed,
+    JSON.stringify({ declined: declined.code, writes: fs.counts.writeText, cached: stillQuiet.cached }),
+  )
+  console.log('PASS  T-238 a lease-only write refreshes the memo; a declined renewal leaves the file untouched')
+}
+
 // ── projects and hosts never share a board ──────────────────────────────────
 {
   const fs = countingFs()
