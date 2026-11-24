@@ -4618,33 +4618,121 @@ export function createApi(ctx, options) {
     })
   }
 
-  /** Renew the lease of every running task the caller owns. Any activity by the
-   * assignee is a heartbeat and renews UNCONDITIONALLY — there is no "lease is
-   * half spent" gate, so a long task cannot drift into expiry between two calls.
-   * The scheduler's host tick covers an assignee that produces no calls at all. */
+  /**
+   * T-238: when a heartbeat is worth a board write.
+   *
+   * Every tool call by an agent runs this path, and it used to rewrite the WHOLE
+   * board every time (read the 5 MB file, clone it, pretty-print it, write it),
+   * serialised per board path. With dozens of live workers that queue is what made
+   * an ordinary `board` call take over a minute. The lease is a full hour, so a
+   * call inside its first half has NOTHING to renew: the call answers off the
+   * stat-validated board cache and the file is not written at all (its mtime does
+   * not move). Only a lease inside its last half is extended — in ONE write — and
+   * concurrent calls of the same owner join a renewal already in flight (single
+   * flight), so N simultaneous tool calls inside the window cost one write, not N.
+   */
+  const LEASE_RENEWAL_WINDOW_MS = TASK_LEASE_MS / 2
+
+  /** True while this card's lease still has MORE than the renewal window left. */
+  function leaseIsFresh(task, now) {
+    if (task.leaseUntil === null || task.leaseUntil === undefined) return false
+    const until = Date.parse(task.leaseUntil)
+    if (!Number.isFinite(until)) return false
+    return until - now > LEASE_RENEWAL_WINDOW_MS
+  }
+
+  /** Does this card's assignee match the calling identity? */
+  function ownedBy(task, owner) {
+    if (task.assignee === null || task.assignee === undefined) return false
+    const sessionMatch = owner.session !== null && owner.session !== undefined && task.assignee.session === owner.session
+    const nameMatch = owner.name !== null && owner.name !== undefined && task.assignee.name === owner.name
+    return sessionMatch === true || nameMatch === true
+  }
+
+  // T-238: one renewal per (project, owner) at a time. A second call that arrives
+  // while a renewal is in flight awaits it instead of queueing another write behind
+  // the same board path.
+  const heartbeatFlights = new Map()
+
+  function heartbeatKeyOf(projectPath, owner) {
+    const session = owner.session === null || owner.session === undefined ? '' : String(owner.session)
+    const name = owner.name === null || owner.name === undefined ? '' : String(owner.name)
+    return [resolve(projectPath), session, name].join('\u0000')
+  }
+
+  /**
+   * Renew the lease of every running task the caller owns. Any activity by the
+   * assignee is a heartbeat, but a FRESH lease is left exactly as it is (T-238 —
+   * see LEASE_RENEWAL_WINDOW_MS). Skipping the write can never let a task drift
+   * into expiry while it is being worked on: a call inside the window always
+   * extends it, and the scheduler's host tick covers an assignee that produces no
+   * calls at all.
+   */
   async function heartbeat(projectPath, owner) {
     if (owner === null || owner === undefined) return
+    const key = heartbeatKeyOf(projectPath, owner)
+    const inFlight = heartbeatFlights.get(key)
+    if (inFlight !== undefined) return inFlight
+    let flight = null
+    flight = renewOwnLeases(projectPath, owner)
+      // A heartbeat must never break the action it precedes: a failed lease write
+      // is reported by the board/host, not raised into the tool call.
+      .catch(function () {})
+      .then(function () {
+        if (heartbeatFlights.get(key) === flight) heartbeatFlights.delete(key)
+      })
+    heartbeatFlights.set(key, flight)
+    return flight
+  }
+
+  async function renewOwnLeases(projectPath, owner) {
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return
     const now = clock()
-    const owned = read.board.tasks.filter((task) => {
-      if (task.status !== 'running' || task.assignee === null) return false
-      const sessionMatch = owner.session !== null && owner.session !== undefined && task.assignee.session === owner.session
-      const nameMatch = owner.name !== null && owner.name !== undefined && task.assignee.name === owner.name
-      return sessionMatch || nameMatch
-    })
+    const owned = read.board.tasks.filter((task) => task.status === 'running' && ownedBy(task, owner))
     if (owned.length === 0) return
-    const applied = await state.apply(
-      projectPath,
-      (board) => model.renewLeases(board, owner, clock()),
-      writePolicyFor(projectPath),
-    )
-    if (applied.failed === null) {
-      for (const task of owned) {
-        const renewed = locks.renewTask(state.memory.locks, task.id, clock(), TASK_LEASE_MS)
-        if (renewed.ok === true) state.memory.locks = renewed.locks
-      }
+    // File locks live in host memory, not in the board: extending them costs no
+    // write, so they stay fresh even when the board write is skipped.
+    for (const task of owned) {
+      const renewed = locks.renewTask(state.memory.locks, task.id, now, TASK_LEASE_MS)
+      if (renewed.ok === true) state.memory.locks = renewed.locks
     }
+    const due = owned.filter((task) => leaseIsFresh(task, now) !== true)
+    // Fresh: no board write, no mtime change, the memo is not touched.
+    if (due.length === 0) return
+    const dueIds = new Set(due.map((task) => String(task.id)))
+    await state.apply(projectPath, (board) => renewDueLeases(board, owner, dueIds, clock()), writePolicyFor(projectPath))
+  }
+
+  /**
+   * The renewal mutation (T-238): ONLY the cards whose lease is inside the window
+   * move; a fresh card of the same owner is returned untouched. `state.apply` runs
+   * this under the board's CAS, so a lost version race re-reads the file and
+   * another card's concurrent write is never overwritten.
+   *
+   * It goes through `enterState` directly rather than the model's `renewLeases`
+   * because that function extends EVERY card the owner holds: reusing it would
+   * move the fresh ones too (and cloning the whole board a second time to pick the
+   * due cards back out). The row is the same declared running -> running
+   * transition, so the two cannot drift.
+   */
+  function renewDueLeases(board, owner, dueIds, now) {
+    let renewed = 0
+    const tasks = board.tasks.map((task) => {
+      if (dueIds.has(String(task.id)) !== true) return task
+      if (task.status !== 'running' || ownedBy(task, owner) !== true) return task
+      const next = Object.assign({}, task)
+      // The same declared running -> running row the model's renewLeases uses.
+      const entered = enterState(next, 'heartbeat', { task: next, actor: 'scheduler' }, now)
+      if (entered.ok !== true) return task
+      next.updatedAt = new Date(now).toISOString()
+      renewed += 1
+      return next
+    })
+    // The board moved on between the read and the write (the card left running):
+    // abandon instead of writing a no-op copy of the board.
+    if (renewed === 0) return null
+    return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
   }
 
 /** Actions that address one task: the stopped-task guard reads the board for

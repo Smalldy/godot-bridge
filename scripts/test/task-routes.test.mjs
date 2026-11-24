@@ -4,7 +4,8 @@
 
 import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, ACTIVITY_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
 import { pruneBoundedCache } from '../../plugin/task-center/api.mjs'
-import { boardPath } from '../../plugin/task-center/board.mjs'
+import { boardCacheStats, boardPath } from '../../plugin/task-center/board.mjs'
+import { TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
 import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
 
 let failures = 0
@@ -876,6 +877,219 @@ function seedManyCards(rig, count) {
   const foreign = await poll()
   check('T-232 a write by another process is seen on the next poll', foreign.ok === true && boardReads === 3 && foreign.counts.total === 1 && foreign.tasks[0].id === 'T-7' && foreign.timings.counts.boardParse === 1, JSON.stringify({ boardReads: boardReads, ids: foreign.tasks === undefined ? null : foreign.tasks.map((task) => task.id), counts: foreign.timings === undefined ? null : foreign.timings.counts }))
   console.log('PASS  T-232 board reads are stat-validated: warm polls decode nothing, writes and foreign edits are never stale')
+}
+
+// ── T-238: a FRESH lease is not a board write; a due one is ONE write ──────
+// Every agent tool call used to run a heartbeat that rewrote the whole board
+// (read the file, clone it, pretty-print it, write it), serialised on the board
+// path. A board lease is an hour, so a call inside its first half has nothing to
+// renew: it answers off the parsed-board memo and never touches the file. Of the
+// cards one caller owns, only the ones inside the window move — in ONE CAS write —
+// and simultaneous calls of the same owner share that write (single flight).
+{
+  const TTL_MS = TASK_LEASE_MS
+  const clock = { at: Date.parse('2026-03-01T00:00:00.000Z') }
+  const beatRig = createRig({ taskAgents: createFakeTaskAgents(), now: () => clock.at })
+  const WORKER = 'session-worker-t-238'
+  const isoAt = (at) => new Date(at).toISOString()
+  const boardFile = boardPath(PROJECT)
+  const runningCard = (id, leaseMs, session) => ({
+    id: id,
+    title: 'card ' + id,
+    kind: 'dev',
+    status: 'running',
+    assignee: { name: 'worker-t-238', session: session === undefined ? WORKER : session },
+    leaseUntil: isoAt(clock.at + leaseMs),
+    updatedAt: isoAt(clock.at),
+    history: [{ at: isoAt(clock.at), by: 'scheduler', from: null, to: 'running', note: 'dispatched' }],
+  })
+  let seeded = 0
+  const seedTasks = (tasks) => {
+    seeded += 1
+    beatRig.fs.files.set(boardFile, { text: JSON.stringify({ version: 2, seq: 20 + seeded, tasks: tasks }), version: 'seed-' + String(seeded) })
+  }
+  // The fake fs bumps its version on every write — the identity the real facade
+  // reports as mtime — so "the file did not move" is provable without a clock.
+  const fileText = () => String(beatRig.fs.files.get(boardFile).text)
+  const fileVersion = () => String(beatRig.fs.files.get(boardFile).version)
+  const fileJson = () => JSON.parse(fileText())
+  let boardWrites = 0
+  const realWriteText = beatRig.fs.writeText
+  beatRig.fs.writeText = async function (...args) {
+    if (String(args[0].targetKey) === boardFile) boardWrites += 1
+    return realWriteText.apply(beatRig.fs, args)
+  }
+  // Counted at the state seam: a skipped heartbeat must not even ATTEMPT a write.
+  let applies = 0
+  const realApply = beatRig.state.apply
+  beatRig.state.apply = async function (...args) {
+    applies += 1
+    return realApply.apply(beatRig.state, args)
+  }
+  const worker = { projectPath: PROJECT, by: '@worker-t-238', role: 'agent', agent: { id: WORKER, name: 'worker-t-238' } }
+  const beat = (id) => beatRig.api.perform('get', { id: id === undefined ? 'T-1' : id }, worker)
+
+  // Fresh lease (55 of 60 minutes left): 20 calls write nothing, change nothing.
+  seedTasks([runningCard('T-1', TTL_MS - 5 * 60 * 1000)])
+  await beatRig.state.read(PROJECT) // decode once, so the calls below are measured on a warm memo
+  const freshText = fileText()
+  const freshVersion = fileVersion()
+  const freshParses = boardCacheStats(beatRig.fs).parses
+  for (let index = 0; index < 20; index += 1) await beat()
+  check(
+    'T-238 20 tool calls on a fresh lease write the board ZERO times',
+    boardWrites === 0 && applies === 0 && fileText() === freshText && fileVersion() === freshVersion,
+    JSON.stringify({ writes: boardWrites, applies: applies, sameText: fileText() === freshText, version: fileVersion() }),
+  )
+  check(
+    'T-238 the fresh-lease calls do not move the board identity and decode nothing',
+    fileVersion() === freshVersion && boardCacheStats(beatRig.fs).parses === freshParses,
+    JSON.stringify({ version: fileVersion(), parses: boardCacheStats(beatRig.fs).parses - freshParses }),
+  )
+  await Promise.all(Array.from({ length: 60 }, () => beat()))
+  check(
+    'T-238 60 concurrent fresh-lease calls still write the board ZERO times',
+    boardWrites === 0 && applies === 0 && fileText() === freshText && fileVersion() === freshVersion,
+    JSON.stringify({ writes: boardWrites, applies: applies, sameText: fileText() === freshText }),
+  )
+
+  // Skipping the board write must not let a FILE lock lapse: locks live in host
+  // memory, so they stay renewed even when the board is not touched.
+  beatRig.state.memory.locks = { 'scripts/a.gd': { path: 'scripts/a.gd', taskId: 'T-1', agent: 'worker-t-238', since: isoAt(clock.at - 1000), leaseUntil: isoAt(clock.at + 1000) } }
+  await beat()
+  const keptLock = beatRig.state.memory.locks['scripts/a.gd']
+  check(
+    'T-238 a skipped board write still renews the in-memory file lock',
+    boardWrites === 0 && applies === 0 && keptLock !== undefined && Date.parse(keptLock.leaseUntil) === clock.at + TTL_MS,
+    JSON.stringify({ writes: boardWrites, lease: keptLock === undefined ? null : keptLock.leaseUntil, expected: isoAt(clock.at + TTL_MS) }),
+  )
+  beatRig.state.memory.locks = {}
+
+  // Inside the window: exactly one write, the full TTL, the activity stamp.
+  clock.at += 30 * 60 * 1000 // 25 minutes left now
+  const dueVersion = fileVersion()
+  await beat()
+  const renewed = fileJson()
+  check('T-238 a call inside the renewal window writes the board exactly ONCE', boardWrites === 1 && applies === 1, JSON.stringify({ writes: boardWrites, applies: applies }))
+  check(
+    'T-238 the renewal extends the full TTL, stamps the activity time and keeps the card running',
+    renewed.tasks.length === 1 &&
+      renewed.tasks[0].leaseUntil === isoAt(clock.at + TTL_MS) &&
+      renewed.tasks[0].updatedAt === isoAt(clock.at) &&
+      renewed.tasks[0].status === 'running' &&
+      fileVersion() !== dueVersion,
+    JSON.stringify({ lease: renewed.tasks[0].leaseUntil, expected: isoAt(clock.at + TTL_MS), updatedAt: renewed.tasks[0].updatedAt, status: renewed.tasks[0].status }),
+  )
+  const parsesAfterRenewal = boardCacheStats(beatRig.fs).parses
+  const afterRenewal = await beatRig.state.read(PROJECT)
+  check(
+    'T-238 the read right after a renewal is the memo of what was WRITTEN (no decode, new lease)',
+    afterRenewal.cached === true && afterRenewal.board.tasks[0].leaseUntil === isoAt(clock.at + TTL_MS) && boardCacheStats(beatRig.fs).parses === parsesAfterRenewal,
+    JSON.stringify({ cached: afterRenewal.cached, lease: afterRenewal.board.tasks[0].leaseUntil, parses: boardCacheStats(beatRig.fs).parses - parsesAfterRenewal }),
+  )
+
+  // The write is bounded by the window: quiet for the rest of TTL, one per window.
+  await Promise.all(Array.from({ length: 5 }, () => beat()))
+  clock.at += 29 * 60 * 1000 // 31 minutes left
+  await beat()
+  check('T-238 a renewed lease stays quiet for the rest of its window', boardWrites === 1 && applies === 1, JSON.stringify({ writes: boardWrites, applies: applies }))
+  clock.at += 2 * 60 * 1000 // 29 minutes left -> inside the window again
+  await beat()
+  check('T-238 the next window costs exactly one more write', boardWrites === 2 && applies === 2, JSON.stringify({ writes: boardWrites, applies: applies }))
+
+  // A lapsed lease is still revived by the worker's own call (one write).
+  clock.at += 3 * TTL_MS
+  await beat()
+  check(
+    'T-238 a lapsed lease is revived by exactly one write while the worker keeps calling',
+    boardWrites === 3 && applies === 3 && Date.parse(fileJson().tasks[0].leaseUntil) === clock.at + TTL_MS,
+    JSON.stringify({ writes: boardWrites, lease: fileJson().tasks[0].leaseUntil }),
+  )
+
+  // Two cards of the same owner: only the due one moves; the fresh one is untouched.
+  clock.at += 5 * 60 * 1000
+  const freshCard = runningCard('T-2', 40 * 60 * 1000)
+  seedTasks([runningCard('T-1', 1000), freshCard])
+  await beat()
+  const two = fileJson()
+  const mine = two.tasks.filter((task) => task.id === 'T-1')[0]
+  const other = two.tasks.filter((task) => task.id === 'T-2')[0]
+  check(
+    'T-238 a due card is renewed without touching a fresh card of the same owner',
+    boardWrites === 4 &&
+      applies === 4 &&
+      two.tasks.length === 2 &&
+      mine.leaseUntil === isoAt(clock.at + TTL_MS) &&
+      other.leaseUntil === freshCard.leaseUntil &&
+      other.updatedAt === freshCard.updatedAt,
+    JSON.stringify({ writes: boardWrites, mine: mine.leaseUntil, other: other.leaseUntil, expected: freshCard.leaseUntil }),
+  )
+
+  // Ten simultaneous calls inside the window share ONE renewal write. The first
+  // renewal's board read is held for one macrotask: every other call was started
+  // in the same tick, so it reaches the heartbeat and joins the flight before the
+  // write can land — the test proves the coalescing instead of racing for it.
+  seedTasks([runningCard('T-1', 1000)])
+  await beatRig.state.read(PROJECT) // warm the memo before arming the gate
+  const concurrentWrites = boardWrites
+  const concurrentApplies = applies
+  const realStateRead = beatRig.state.read
+  let gate = true
+  beatRig.state.read = async function (...args) {
+    if (gate === true) {
+      gate = false
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    return realStateRead.apply(beatRig.state, args)
+  }
+  try {
+    await Promise.all(Array.from({ length: 10 }, () => beat()))
+  } finally {
+    beatRig.state.read = realStateRead
+  }
+  check(
+    'T-238 ten simultaneous calls inside the window share ONE renewal write',
+    boardWrites === concurrentWrites + 1 && applies === concurrentApplies + 1,
+    JSON.stringify({ writes: boardWrites - concurrentWrites, applies: applies - concurrentApplies }),
+  )
+
+  // Lost CAS: another writer lands a card of its own first. The renewal must
+  // re-read the file, keep that card and still renew ours.
+  seedTasks([runningCard('T-1', 1000)])
+  const foreignCard = runningCard('T-9', 50 * 60 * 1000, 'session-other-worker')
+  foreignCard.assignee = { name: 'other-worker', session: 'session-other-worker' }
+  let interfered = false
+  beatRig.fs.hooks.beforeWrite = function (intercept) {
+    // The fs hook sees every write (the session registry included): only the
+    // board write races here.
+    if (String(intercept.key) !== boardFile || interfered === true) return undefined
+    interfered = true
+    const current = JSON.parse(fileText())
+    current.tasks.push(foreignCard)
+    intercept.write(JSON.stringify(current))
+    return 'stale'
+  }
+  const casWrites = boardWrites
+  try {
+    await beat()
+  } finally {
+    beatRig.fs.hooks.beforeWrite = null
+  }
+  const merged = fileJson()
+  const mergedMine = merged.tasks.filter((task) => task.id === 'T-1')[0]
+  const mergedOther = merged.tasks.filter((task) => task.id === 'T-9')[0]
+  check(
+    'T-238 a lost CAS re-reads the file, keeps the other card and still renews ours',
+    interfered === true &&
+      boardWrites === casWrites + 2 && // one stale attempt, then the landing write
+      merged.tasks.length === 2 &&
+      mergedOther !== undefined &&
+      mergedOther.leaseUntil === foreignCard.leaseUntil &&
+      mergedOther.updatedAt === foreignCard.updatedAt &&
+      mergedMine.leaseUntil === isoAt(clock.at + TTL_MS),
+    JSON.stringify({ writes: boardWrites - casWrites, ids: merged.tasks.map((task) => task.id), mine: mergedMine === undefined ? null : mergedMine.leaseUntil, other: mergedOther === undefined ? null : mergedOther.leaseUntil }),
+  )
+  console.log('PASS  T-238 a fresh lease writes nothing; a due lease writes once and concurrent calls share it')
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
