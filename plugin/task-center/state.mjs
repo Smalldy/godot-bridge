@@ -6,9 +6,10 @@
  * truth. The only thing that differs between surfaces is who is calling.
  */
 
+import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { createSessionLookup } from './session-lookup.mjs'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   PROJECT_ACTIVE_MS,
   mergeProjectSessions,
@@ -47,6 +48,98 @@ export function compareSessionRecency(left, right) {
   const byFirst = rightFirst.localeCompare(leftFirst)
   if (byFirst !== 0) return byFirst
   return String(left.sessionId).localeCompare(String(right.sessionId))
+}
+
+/**
+ * T-240: one session id in canonical form.
+ *
+ * DSH names a session both with and without the `session-` prefix (the sessions
+ * tree writes `session-<id>` or `<id>`), so archive membership is compared on
+ * the canonical id instead of guessing which spelling the store recorded.
+ */
+export function canonicalSessionId(sessionId) {
+  const text = typeof sessionId === 'string' ? sessionId.trim() : ''
+  return text.indexOf('session-') === 0 ? text.slice('session-'.length) : text
+}
+
+/**
+ * T-240: the HOST's archive state — which sessions DSH has archived.
+ *
+ * The source is the host workspace store (`<home>/.dsh/storages/workspace.json`
+ * → `global.archivedSessionIds`), NEVER a guess from the sessions tree: a DSH
+ * session directory that still exists says a session was once seen, not that it
+ * is active, and a missing one says nothing at all. A host without the store (or
+ * one that cannot read it) answers "nothing archived", never "everything old is
+ * archived".
+ *
+ * The store is re-read only when its stat changes, so a /meta poll pays one stat
+ * instead of parsing the file every answer. GODOT_BRIDGE_WORKSPACE_STORAGE
+ * points the reader at another host store (alternative DSH homes and fixtures),
+ * exactly like GODOT_BRIDGE_SESSIONS_DIR does for the sessions tree.
+ */
+export function createSessionArchive(options) {
+  const o = options === undefined || options === null ? {} : options
+  const home = typeof o.homeDir === 'string' && o.homeDir.length > 0 ? o.homeDir : homedir()
+  const envPath =
+    typeof process.env.GODOT_BRIDGE_WORKSPACE_STORAGE === 'string' && process.env.GODOT_BRIDGE_WORKSPACE_STORAGE !== ''
+      ? process.env.GODOT_BRIDGE_WORKSPACE_STORAGE
+      : null
+  const storagePath =
+    typeof o.storagePath === 'string' && o.storagePath.length > 0 ? o.storagePath : envPath !== null ? envPath : join(home, '.dsh', 'storages', 'workspace.json')
+  const readFile = typeof o.readFile === 'function' ? o.readFile : (path) => readFileSync(path, 'utf8')
+  const statOf =
+    typeof o.stat === 'function'
+      ? o.stat
+      : (path) => statSync(path)
+  // { key, ids, canonical } — keyed by the stat of the store that produced it.
+  let cache = { key: null, ids: new Set(), canonical: new Set() }
+  function readStore() {
+    let info = null
+    try {
+      info = statOf(storagePath)
+    } catch (error) {
+      info = null
+    }
+    if (info === null || info === undefined) {
+      cache = { key: null, ids: new Set(), canonical: new Set() }
+      return cache
+    }
+    const mtime = info.mtimeMs === undefined ? info.mtime : info.mtimeMs
+    const key = String(mtime) + '|' + String(info.size)
+    if (cache.key === key) return cache
+    const ids = new Set()
+    let parsed = null
+    try {
+      parsed = JSON.parse(String(readFile(storagePath)))
+    } catch (error) {
+      // Unreadable/unparseable: no archive information. Never derive it from
+      // anything else.
+      parsed = null
+    }
+    const list =
+      parsed !== null && typeof parsed === 'object' && parsed.global !== null && typeof parsed.global === 'object' && Array.isArray(parsed.global.archivedSessionIds)
+        ? parsed.global.archivedSessionIds
+        : []
+    for (const id of list) {
+      if (typeof id === 'string' && id.trim() !== '') ids.add(id.trim())
+    }
+    const canonical = new Set()
+    for (const id of ids) canonical.add(canonicalSessionId(id))
+    cache = { key: key, ids: ids, canonical: canonical }
+    return cache
+  }
+  return {
+    storagePath: storagePath,
+    /** Every archived session id the host recorded (raw spelling), as a copy. */
+    archivedSessionIds: function () {
+      return new Set(readStore().ids)
+    },
+    /** Is THIS session archived? Both id spellings are accepted; nothing is guessed. */
+    isArchived: function (sessionId) {
+      const canonical = canonicalSessionId(sessionId)
+      return canonical === '' ? false : readStore().canonical.has(canonical)
+    },
+  }
 }
 
 /**
@@ -115,6 +208,17 @@ export function createState(ctx, options) {
     if (lookupInstance !== null) return lookupInstance
     lookupInstance = lookupOption === 'default' ? createSessionLookup({ homeDir: homeDir, isDir: opts.isDir }) : lookupOption
     return lookupInstance
+  }
+  // T-240: the host's ARCHIVE state (which sessions DSH archived). Same option
+  // shape as the lookup above: undefined = the real host store, null = disabled
+  // (a host WITHOUT the store answers "nothing archived", never a guess).
+  const archiveOption = opts.sessionArchive === undefined ? 'default' : opts.sessionArchive
+  let archiveInstance = null
+  function sessionArchive() {
+    if (archiveOption === null) return null
+    if (archiveInstance !== null) return archiveInstance
+    archiveInstance = archiveOption === 'default' ? createSessionArchive({ homeDir: homeDir }) : archiveOption
+    return archiveInstance
   }
 
   let registryWrite = Promise.resolve()
@@ -438,22 +542,51 @@ export function createState(ctx, options) {
    * Paging needs two facts that the participation SET does not provide: the
    * project's TOTAL, and a deterministic recency ORDER to cut pages on. Neither
    * may cost a host read, so this index carries only what the registry and the
-   * board already record — sessionId, firstSeenAt, lastSeenAt — and never
-   * touches a DSH session directory, a conversation log or a workspace lookup.
+   * board already record — sessionId, firstSeenAt, lastSeenAt — plus the
+   * archive flag below — and never touches a DSH session directory, a
+   * conversation log or a workspace lookup.
    * projectSessionsFor() stays the SET reader (first-appearance order, no
    * ranking); this is explicitly a paging ORDER.
+   *
+   * T-240: every row names whether the HOST archived that session. That is what
+   * lets the hot working set exclude finished sessions without deleting them
+   * from the project: they stay in the index (and in archivedTotal), so the
+   * history page can still reach them. The flag is one lookup against the host
+   * store per answer (stat-cached inside it), not a read per session.
    */
   function projectSessionIndexFor(projectPath, board) {
     const read = projectSessionsFor(projectPath, board)
     const rows = Array.isArray(read.sessions) ? read.sessions : []
+    const archive = sessionArchive()
+    // ONE snapshot of the host store per answer (the reader stat-caches it), so a
+    // project with 300 participants still costs a single stat + one membership
+    // test per row — never a host read per session.
+    let archivedKeys = null
+    if (archive !== null && typeof archive.archivedSessionIds === 'function') {
+      try {
+        archivedKeys = new Set(Array.from(archive.archivedSessionIds()).map((id) => canonicalSessionId(id)))
+      } catch (error) {
+        archivedKeys = null
+      }
+    }
     const sessions = rows
       .map((row) => ({
         sessionId: row.sessionId,
         firstSeenAt: typeof row.firstSeenAt === 'string' ? row.firstSeenAt : null,
         lastSeenAt: typeof row.lastSeenAt === 'string' ? row.lastSeenAt : null,
+        // True only when the HOST says so; an unknown host store means false.
+        archived: archivedKeys !== null && archivedKeys.has(canonicalSessionId(row.sessionId)),
       }))
       .sort(compareSessionRecency)
-    return { source: read.source, sessions: sessions, total: sessions.length }
+    const archivedTotal = sessions.reduce((count, row) => count + (row.archived === true ? 1 : 0), 0)
+    return {
+      source: read.source,
+      sessions: sessions,
+      total: sessions.length,
+      archivedTotal: archivedTotal,
+      // 'host' = the archive store was consulted; 'none' = this host has none.
+      archivedSource: archive === null ? 'none' : 'host',
+    }
   }
 
   /** Adopt the project a panel request carries, and make sure the loop drives it. */

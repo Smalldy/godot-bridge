@@ -3365,6 +3365,11 @@ export function createApi(ctx, options) {
    *   scope=history (or a cursor with no explicit scope)  a HISTORICAL page
    *   limit    page size, default 20, clamped to [1, 200]
    *   cursor   the opaque keyset cursor a previous answer's nextCursor carried
+   *   includeArchived  T-240: FALSE hides the host-archived sessions from a
+   *                    history page. Absent/true = include them (the default).
+   *                    The hot working set always hides them (the asking
+   *                    session itself is pinned in either case); the flag
+   *                    exists for the history walk that WANTS the archive.
    *
    * The hot answer is the default, so an OLD client that sends none of these
    * keeps the working set it needs (and the truncated flag tells it there is
@@ -3379,7 +3384,9 @@ export function createApi(ctx, options) {
     const rawLimit = asked ? NaN : Number(o.scopeLimit)
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(SCOPE_HOT_LIMIT_MAX, Math.floor(rawLimit))) : SCOPE_HOT_LIMIT
     const cursor = typeof o.scopeCursor === 'string' && o.scopeCursor !== '' ? o.scopeCursor : null
-    return { mode: requested === null ? (cursor === null ? 'hot' : 'history') : requested, limit: limit, cursor: cursor }
+    // null = the caller said nothing; history then keeps the archived sessions.
+    const includeArchived = o.scopeIncludeArchived === true ? true : o.scopeIncludeArchived === false ? false : null
+    return { mode: requested === null ? (cursor === null ? 'hot' : 'history') : requested, limit: limit, cursor: cursor, includeArchived: includeArchived }
   }
 
   /**
@@ -3397,6 +3404,34 @@ export function createApi(ctx, options) {
       ordered.unshift(pinned)
     }
     return ordered
+  }
+
+  /**
+   * T-240: the ordering ONE scope walk uses.
+   *
+   *   hot      ACTIVE participants only (the host did not archive them), with
+   *            the asking session pinned first even when the host archived it:
+   *            a panel must always find ITSELF, and the current session stays
+   *            on the hot first screen by requirement, not by recency.
+   *   history  every participant the caller asked for — archived sessions are
+   *            INCLUDED by default and `includeArchived=false` hides them — and
+   *            the asking session is pinned exactly like the hot page.
+   *
+   * The pin is what makes a hot answer's nextCursor safe to continue: the
+   * pinned row is delivered on that first page, so the history page that
+   * follows it never returns it again.
+   */
+  function scopeOrderOf(sorted, panelSession, request) {
+    const rows = Array.isArray(sorted) ? sorted : []
+    const includeArchived = request.mode === 'hot' ? false : request.includeArchived !== false
+    const visible = includeArchived === true ? rows : rows.filter((entry) => entry.archived !== true)
+    const ordered = orderScopeSessions(visible, panelSession)
+    if (request.mode !== 'hot' || panelSession === null || panelSession === undefined) return ordered
+    if (ordered.length > 0 && ordered[0].sessionId === panelSession) return ordered
+    // The asking session is archived (or is not in the active set): pin the row
+    // the host recorded, so the hot page still opens on the current session.
+    const pinned = rows.filter((entry) => entry.sessionId === panelSession)[0]
+    return pinned === undefined ? ordered : [pinned].concat(ordered)
   }
 
   /** An opaque, URL-safe keyset cursor: the SORT KEY of the last row of a page. */
@@ -3440,14 +3475,25 @@ export function createApi(ctx, options) {
    *     nothing else;
    *   - summaries (one workspace lookup each) are built for the hot page only.
    *
+   * T-240: the hot working set is the ACTIVE (host-unarchived) sessions. The
+   * archived ones stay in `sorted`/archivedTotal — the history page must still
+   * reach them — but they are never summarised or probed here unless they own a
+   * card still in progress (a takeover still needs that owner's liveness).
+   *
    * The per-request overlay (pagedProjectScopeOf) merges the panel session onto
    * this answer, so two panels on one project pay for ONE read sequence.
    */
   async function scopeBaseOf(projectPath, board, limit) {
     const index =
-      typeof state.projectSessionIndexFor === 'function' ? state.projectSessionIndexFor(projectPath, board) : { source: 'none', sessions: [], total: 0 }
+      typeof state.projectSessionIndexFor === 'function'
+        ? state.projectSessionIndexFor(projectPath, board)
+        : { source: 'none', sessions: [], total: 0, archivedTotal: 0, archivedSource: 'none' }
     const sorted = Array.isArray(index.sessions) ? index.sessions : []
-    const hot = sorted.slice(0, limit)
+    const active = sorted.filter((entry) => entry.archived !== true)
+    const hot = active.slice(0, limit)
+    const archivedTotal = Number.isFinite(index.archivedTotal)
+      ? index.archivedTotal
+      : sorted.reduce((count, entry) => count + (entry.archived === true ? 1 : 0), 0)
     const evidence = hot.slice()
     for (const task of board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []) {
       if (task === null || task === undefined || HANDOFF_ACTIVE_STATUSES.indexOf(task.status) < 0) continue
@@ -3484,6 +3530,10 @@ export function createApi(ctx, options) {
       forLimit: limit,
       source: index.source === undefined ? 'none' : index.source,
       total: sorted.length,
+      // T-240: the whole project's archived count, not this page's.
+      archivedTotal: archivedTotal,
+      // 'host' when the archive store was consulted, 'none' when it is absent.
+      archivedSource: typeof index.archivedSource === 'string' ? index.archivedSource : 'none',
       sorted: sorted,
       hotIds: hot.map((entry) => entry.sessionId),
       evidenceRows: rows,
@@ -3547,6 +3597,14 @@ export function createApi(ctx, options) {
    * paging parameters renders a coherent (smaller) list instead of breaking.
    * `handoff` keeps its full inventory: it also carries the owners of cards still
    * in progress, because a takeover must never judge one without evidence.
+   *
+   * T-240: the host's ARCHIVED sessions shape the page, not the project's size.
+   *   hot      archived sessions are NOT on it; the asking session stays pinned
+   *            first even when it is archived;
+   *   history  archived sessions ARE on it unless `includeArchived=false`;
+   *   both     `archivedTotal` counts the whole project and `archivedInPage`
+   *            counts this page, so a panel can say "20 of 26 active · 4 archived"
+   *            without a second request.
    */
   async function pagedProjectScopeOf(projectPath, board, panelSession, options) {
     const o = options === undefined || options === null ? {} : options
@@ -3554,7 +3612,12 @@ export function createApi(ctx, options) {
     const ref = projectRefOf(projectPath)
     const built = await scopeBaseFor(projectPath, board, request.limit, o.refresh === true)
     const base = built.value
-    const ordered = orderScopeSessions(base.sorted, panelSession)
+    // T-240: the ordering is the VIEW's (active-only for hot, archive-aware for
+    // history), with the asking session pinned first in both.
+    const ordered = scopeOrderOf(base.sorted, panelSession, request)
+    const archivedTotal = Number.isFinite(base.archivedTotal)
+      ? base.archivedTotal
+      : base.sorted.reduce((count, entry) => count + (entry.archived === true ? 1 : 0), 0)
     // The panel session's evidence is the ONLY per-request host read: when the
     // shared build already paid for it (it is on the page, or it owns a card in
     // flight) nothing is read again.
@@ -3609,7 +3672,16 @@ export function createApi(ctx, options) {
             ordered.filter((entry) => entry.sessionId !== panelSession && compareSessionRecency(entry, cursor) > 0)
     }
     const page = rest.slice(0, request.limit)
-    const nextCursor = rest.length > page.length ? encodeScopeCursor(page[page.length - 1]) : null
+    const archivedInPage = page.reduce((count, entry) => count + (entry.archived === true ? 1 : 0), 0)
+    // T-239's contract is unchanged: truncated/nextCursor describe THIS view — a
+    // page is truncated only when rows remain AFTER it in the ordering it was cut
+    // from, and a cursor always continues that same ordering. The archived rows
+    // the hot view leaves out are NOT "more of the hot page": they are the history
+    // view, advertised by archivedTotal and reached with a history request
+    // (scope=history keeps them by default), never by a cursor that would then
+    // return nothing.
+    const moreInView = rest.length > page.length
+    const nextCursor = page.length > 0 && moreInView ? encodeScopeCursor(page[page.length - 1]) : null
     // Summaries: the shared build owns the hot page. The one row this request may
     // still need is the panel session pinned in from OUTSIDE it.
     const summaryById = new Map()
@@ -3621,8 +3693,22 @@ export function createApi(ctx, options) {
         for (const row of builtRows) summaryById.set(row.sessionId, row)
       }
     }
-    const sessions = page.map((entry) => ({ sessionId: entry.sessionId, firstSeenAt: entry.firstSeenAt, lastSeenAt: entry.lastSeenAt }))
-    const summaries = request.mode === 'hot' ? page.map((entry) => summaryById.get(entry.sessionId)).filter((row) => row !== undefined) : []
+    const sessions = page.map((entry) => ({
+      sessionId: entry.sessionId,
+      firstSeenAt: entry.firstSeenAt,
+      lastSeenAt: entry.lastSeenAt,
+      // T-240: true only when the HOST archived this session.
+      archived: entry.archived === true,
+    }))
+    const summaries =
+      request.mode === 'hot'
+        ? page
+            .map((entry) => {
+              const row = summaryById.get(entry.sessionId)
+              return row === undefined ? undefined : Object.assign({}, row, { archived: entry.archived === true })
+            })
+            .filter((row) => row !== undefined)
+        : []
     const panelSessionParticipates = panelSession === null || panelSession === undefined ? null : base.sorted.some((entry) => entry.sessionId === panelSession)
     let currentSessionProject = null
     if (panelSession !== null && panelSession !== undefined) {
@@ -3657,6 +3743,17 @@ export function createApi(ctx, options) {
       cursor: request.cursor,
       truncated: nextCursor !== null,
       nextCursor: nextCursor,
+      // T-240: the archive's place in the project and in this page. `total`
+      // still counts EVERY participant, archived included, so a client can say
+      // "N participating · M archived" without another request — and it is how a
+      // panel learns the archive exists at all (the hot cursor stays the ACTIVE
+      // working set's).
+      archivedTotal: archivedTotal,
+      archivedInPage: archivedInPage,
+      // 'host' when the host archive store was consulted, 'none' when absent.
+      archivedSource: typeof base.archivedSource === 'string' ? base.archivedSource : 'none',
+      // Whether THIS view carries the archived sessions (hot never does).
+      includeArchived: request.mode === 'hot' ? false : request.includeArchived !== false,
       summariesDeferred: request.mode !== 'hot',
       // How many participating sessions THIS answer actually read.
       processed: processed,
@@ -4407,6 +4504,9 @@ export function createApi(ctx, options) {
     const projectRef = projectRefOf(projectPath)
     // T-239: the page size is part of the key — the cached answer carries the
     // page it was built for, so a different limit is a different answer.
+    // T-240: the archive flag does NOT need to be part of the key: it only shapes
+    // a HISTORY page, and history is never served from (or written to) this
+    // cache — the hot answer it could otherwise split is the same either way.
     const key = projectRef.id + '|' + (panelSession === null ? '' : panelSession) + '|' + String(scopeRequest.limit)
     const fresh = opts.refresh === true
     let cache = historyMode === true ? 'bypass' : 'miss'
@@ -4435,7 +4535,14 @@ export function createApi(ctx, options) {
     if (historyMode === true) {
       const errors = {}
       const scope = await guardedSegment(errors, segments, 'scope', null, () =>
-        pagedProjectScopeOf(projectPath, board, panelSession, { scopeMode: 'history', scopeLimit: scopeRequest.limit, scopeCursor: scopeRequest.cursor }),
+        pagedProjectScopeOf(projectPath, board, panelSession, {
+          scopeMode: 'history',
+          scopeLimit: scopeRequest.limit,
+          scopeCursor: scopeRequest.cursor,
+          // T-240: history keeps the archived sessions unless the caller asked
+          // for the active history only.
+          scopeIncludeArchived: scopeRequest.includeArchived,
+        }),
       )
       let nextStep = null
       try {

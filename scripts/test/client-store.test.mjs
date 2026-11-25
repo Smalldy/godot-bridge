@@ -1570,6 +1570,95 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   console.log('PASS  T-239 an unpaged client renders the hot scope and keeps its paging data')
 }
 
+// ── T-240: an OLD panel is untouched by the archive markers ─────────────────
+// /meta's scope now names, per row, whether the host archived that session, and
+// how many the project has (archivedTotal / archivedInPage / archivedSource).
+// This client pages nothing and sends no archive flag, so it must keep rendering
+// exactly the rows it is handed and carry the new fields through untouched: no
+// new query parameter, no shape change, no board rebuild.
+{
+  const routes = new Map()
+  const requests = []
+  globalThis.fetch = async (url) => {
+    requests.push(String(url))
+    const key = String(url).split('?')[0]
+    const handler = routes.get(key)
+    if (handler === undefined) throw new Error('unexpected request: ' + String(url))
+    return { json: async () => (typeof handler === 'function' ? handler(String(url)) : handler) }
+  }
+  const rows = []
+  for (let index = 0; index < 20; index += 1) {
+    rows.push({ sessionId: 'session-' + String(index).padStart(2, '0'), firstSeenAt: null, lastSeenAt: null, archived: index < 3 })
+  }
+  const summaries = rows.map((row) => ({ sessionId: row.sessionId, status: 'stale', cards: { owned: 1, active: 0 }, archived: row.archived }))
+  routes.set('/state', {
+    ok: true,
+    full: true,
+    project: '/repo',
+    projectRoot: '/repo',
+    resolvedFrom: 'session',
+    sessionProject: '/repo',
+    counts: { total: 1 },
+    tasks: [{ id: 'T-1', status: 'pending', title: 'card' }],
+    scope: { boardProject: { id: 'repo', root: '/repo' }, panelSession: 'session-test', sessionSummaries: [summaries[0]], currentSessionProject: '/repo', light: true },
+    agentTree: { available: false, root: null, members: [], count: 0, error: 'deferred' },
+    worktrees: { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] },
+    metadata: { split: true, light: true, deferred: ['agentTree', 'worktrees'] },
+  })
+  routes.set('/meta', {
+    ok: true,
+    project: '/repo',
+    cache: 'miss',
+    meta: {
+      scope: {
+        boardProject: { id: 'repo', root: '/repo' },
+        panelSession: 'session-test',
+        projectSessions: rows,
+        sessionSummaries: summaries,
+        sessions: rows,
+        summaries: summaries,
+        total: 66,
+        limit: 20,
+        mode: 'hot',
+        truncated: true,
+        nextCursor: 'cursor-1',
+        archivedTotal: 11,
+        archivedInPage: 3,
+        archivedSource: 'host',
+        includeArchived: false,
+        summariesDeferred: false,
+        currentSessionProject: '/repo',
+        light: false,
+        handoff: { required: false, eligibility: { takeover: { ok: false } } },
+      },
+      agentTree: { available: true, root: { id: 'session-test', name: 'lead' }, members: [], count: 0, error: null },
+      worktrees: { available: true, error: null, total: 1, active: 0, counts: { main: 1 }, worktrees: [{ path: '/repo', type: 'main' }] },
+      environment: { clean: true },
+      roles: { version: 1 },
+      decisionPolicy: { version: 1 },
+      activityEvents: null,
+    },
+    errors: {},
+    metadata: { split: true, deferred: [] },
+  })
+  const archiveStore = createTaskStore((key) => key, deps)
+  await archiveStore.load()
+  await archiveStore.loadMeta()
+  const metaUrl = requests.filter((url) => url.indexOf('/meta') === 0)[0]
+  assert.equal(metaUrl.indexOf('includeArchived'), -1, 'an old client asks for no archive filter: ' + metaUrl)
+  assert.equal(metaUrl.indexOf('scope='), -1, 'an old client asks for no scope page: ' + metaUrl)
+  const archived = archiveStore.getSnapshot()
+  assert.equal(archived.scope.sessions.length, 20, 'the panel renders the same page it was handed')
+  assert.equal(archived.scope.projectSessions.length, 20, 'the legacy session field is the same page')
+  assert.equal(archived.scope.archivedTotal, 11, 'the project archive count rides along untouched')
+  assert.equal(archived.scope.archivedInPage, 3, 'the page archive count rides along untouched')
+  assert.equal(archived.scope.sessions.filter((row) => row.archived === true).length, 3, 'every row keeps its marker')
+  assert.equal(archived.scope.summaries.filter((row) => row.archived === true).length, 3, 'the summary rows keep it too')
+  assert.equal(archived.scope.nextCursor, 'cursor-1', 'the paging data is still there for a later client')
+  assert.equal(archived.tasks.length, 1, 'the board is unchanged by the archive markers')
+  console.log('PASS  T-240 an unpaged panel carries the archive markers untouched')
+}
+
 const poll = globalThis.setInterval
 let polls = 0
 globalThis.setInterval = (fn, ms) => {
