@@ -2915,7 +2915,14 @@ export function createApi(ctx, options) {
         break
       }
       archived += result.archived
-      for (const id of Array.isArray(result.ids) ? result.ids : []) ids.push(id)
+      for (const id of Array.isArray(result.ids) ? result.ids : []) {
+        ids.push(id)
+        // A card a PASS kept (its archive copy was stale) can still be archived by
+        // the NEXT pass once that stale copy is out. 'kept' means "still hot", so
+        // the later move takes it back off the diagnostic list.
+        const index = kept.indexOf(id)
+        if (index >= 0) kept.splice(index, 1)
+      }
       if (Number.isFinite(result.seq)) seq = result.seq
       rounds += 1
     }
@@ -2981,6 +2988,14 @@ export function createApi(ctx, options) {
     // updatedAt / history.at from the read clock (see the function's comment).
     const planned = new Map()
     for (const task of plan.candidates) planned.set(String(task.id), cardContentSignature(task))
+    // What each planned id ACTUALLY holds in the archive after the append.
+    // appendToTaskArchive SKIPS an id it already has, so a copy left behind by a
+    // crash between this append and the board CAS (or by a reconcile that failed)
+    // is still the OLD version. A card may only leave the hot board when the
+    // archive holds exactly the card being removed — otherwise removing it would
+    // throw the hot version away and leave the old one in the archive.
+    const archivedSignatures = new Map()
+    for (const task of archived.tasks) archivedSignatures.set(String(task.id), cardContentSignature(task))
     // Cards an EARLIER row archived (this plugin's archive or the old per-year
     // files) are folded into the index too, so a dependency on any archived card
     // still resolves to "done".
@@ -3001,6 +3016,15 @@ export function createApi(ctx, options) {
           }
           if (cardContentSignature(task) !== signature) {
             // Edited after the plan: keep the user's version, and never index it.
+            keptNow.add(id)
+            remaining.push(task)
+            continue
+          }
+          if (archivedSignatures.get(id) !== signature) {
+            // The archive already holds a DIFFERENT version of this id (a copy a
+            // crash left behind, or a reconcile that could not land). The hot card
+            // is the newer truth: keep it, never index the old copy, and take that
+            // copy back out below. The next sweep archives the fresh version.
             keptNow.add(id)
             remaining.push(task)
             continue
@@ -3039,7 +3063,19 @@ export function createApi(ctx, options) {
       if (reread.failed === undefined) currentBoard = reread.board
     }
     const present = new Set(currentBoard.tasks.map((task) => String(task.id)))
-    const stale = plan.candidates.filter((task) => present.has(String(task.id)))
+    const archiveById = new Map(archived.tasks.map((task) => [String(task.id), task]))
+    const stale = []
+    for (const task of plan.candidates) {
+      const id = String(task.id)
+      if (present.has(id) !== true) continue
+      const archivedCopy = archiveById.get(id)
+      if (archivedCopy === undefined) continue
+      // Take back out the copy the archive really holds. When it is the plan's own
+      // copy this is the usual mid-sweep-edit reconcile; when it is an OLDER copy
+      // the crash/guard above just kept the card for, only that exact old copy may
+      // be removed (a newer copy another sweep archived is not ours to delete).
+      stale.push(archivedCopy)
+    }
     let reconcileError = null
     if (stale.length > 0) {
       const reconciled = await removeFromTaskArchive(

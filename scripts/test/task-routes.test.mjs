@@ -2305,5 +2305,47 @@ function archiveHarness() {
   console.log('PASS  T-242 a write landing mid-sweep wins: the card stays hot and its stale archive copy is taken back out')
 }
 
+// ── T-242: a copy a crash left in the archive never swallows a newer hot card ─
+// The archive append and the board CAS are two writes. A crash between them leaves
+// a copy in the archive while the card is STILL HOT, and appendToTaskArchive skips
+// an id it already holds — so the next sweep must not remove the hot card on the
+// strength of that OLD copy (that would throw away every change made since the
+// crash). It keeps the newer hot card, takes the stale copy back out, and the
+// sweep after that archives the fresh version.
+{
+  const h = archiveHarness()
+  const board = h.boardJson()
+  const hot = board.tasks.filter((task) => task.id === 'T-159')[0]
+  hot.title = 'NEWER HOT TITLE'
+  board.archive = { enabled: true, keepDone: 5, doneAfterDays: 7 }
+  h.rig.fs.files.set(boardPath(PROJECT), { text: JSON.stringify(board, null, 2) + '\n', version: 'crash-hot' })
+  h.rig.fs.files.set(tasksArchivePath(PROJECT), {
+    text: JSON.stringify({ version: 1, updatedAt: new Date(ARCHIVE_NOW).toISOString(), count: 1, tasks: [Object.assign({}, hot, { title: 'ARCHIVED OLD TITLE' })] }, null, 2) + '\n',
+    version: 'crash-left-copy',
+  })
+  const res = await h.post({ action: 'tick' })
+  const payload = res.json()
+  const finalBoard = h.boardJson()
+  const archivedCard = JSON.parse(h.archiveFile().text).tasks.filter((task) => task.id === 'T-159')[0]
+  check(
+    'T-242 a crash-left archive copy never makes the sweep drop the newer hot card',
+    payload.ok === true &&
+      payload.archive.ok === true &&
+      archivedCard !== undefined &&
+      archivedCard.title === 'NEWER HOT TITLE' &&
+      finalBoard.tasks.filter((task) => task.id === 'T-159').length === 0 &&
+      finalBoard.archivedDone.filter((row) => row.id === 'T-159').length === 1 &&
+      finalBoard.tasks.length === 10 &&
+      payload.archive.kept.length === 0,
+    JSON.stringify({ archive: { archived: payload.archive.archived, kept: payload.archive.kept, rounds: payload.archive.rounds }, title: archivedCard === undefined ? null : archivedCard.title, hot: finalBoard.tasks.length }),
+  )
+  check(
+    'T-242 the OLD archived copy never survives under the same id (exactly one card, one place)',
+    JSON.parse(h.archiveFile().text).tasks.filter((task) => task.id === 'T-159').length === 1 && finalBoard.archivedDone.filter((row) => row.id === 'T-159').length === 1,
+    JSON.stringify({ archivedRows: JSON.parse(h.archiveFile().text).tasks.filter((task) => task.id === 'T-159').length, indexRows: finalBoard.archivedDone.filter((row) => row.id === 'T-159').length }),
+  )
+  console.log('PASS  T-242 a crash-left archive copy keeps the newer hot content: the fresh version is what gets archived')
+}
+
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
 process.exit(failures === 0 ? 0 : 1)
