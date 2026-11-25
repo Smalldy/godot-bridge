@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import { loadClientStateProjection } from './support/client-state.mjs'
 
 const require = createRequire(import.meta.url)
 const { createTaskStore } = require('../../client/src/store.cjs')
@@ -1657,6 +1658,98 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(archived.scope.nextCursor, 'cursor-1', 'the paging data is still there for a later client')
   assert.equal(archived.tasks.length, 1, 'the board is unchanged by the archive markers')
   console.log('PASS  T-240 an unpaged panel carries the archive markers untouched')
+}
+
+// ── T-242: the REAL snapshot projection carries the archive settings ────────
+// Review round 1: tcSnapshot() dropped archiveSettings/archivedIndexCount, so the
+// panel's settings page always rendered the defaults while /state carried the
+// stored values. The seam is the projection itself, so this drives the REAL
+// declarations from client/src/15-client-state.part through the REAL store — a
+// hand-built snapshot cannot catch this class of bug again.
+{
+  const real = loadClientStateProjection()
+  const stateAnswer = {
+    ok: true,
+    full: true,
+    project: '/archive-project',
+    projectRoot: '/archive-project',
+    seq: 5,
+    tasks: [],
+    counts: { total: 0 },
+    dispatch: { state: 'paused' },
+    metadata: { split: true, light: true, deferred: ['scope'], errors: {} },
+    boardSize: { bytes: 900000, limit: 33554432, percent: 2.7, level: 'ok', cards: 60, bytesPerCard: 15000, headroomCards: 1000, warning: null },
+    archiveSettings: {
+      enabled: false,
+      doneAfterDays: 21,
+      keepDone: 40,
+      maxBoardBytes: 4 * 1024 * 1024,
+      lastSweepAt: '2026-11-25T10:20:00.000Z',
+      lastSweep: { at: '2026-11-25T10:20:00.000Z', archived: 12, boardBytes: 900000 },
+    },
+    archivedIndexCount: 12,
+    archivedCount: 12,
+    archiveRange: { from: '2026-01-01T00:00:00.000Z', to: '2026-11-25T10:20:00.000Z' },
+  }
+  const requested = []
+  globalThis.fetch = async (url) => {
+    requested.push(String(url))
+    return {
+      json: async () =>
+        String(url).indexOf('/meta') >= 0
+          ? {
+              ok: true,
+              meta: {
+                scope: { light: false },
+                agentTree: null,
+                worktrees: null,
+                environment: null,
+                roles: null,
+                archivedCount: 12,
+                archiveRange: stateAnswer.archiveRange,
+                decisionPolicy: null,
+                activityEvents: null,
+                nextStep: null,
+              },
+            }
+          : stateAnswer,
+    }
+  }
+  const realStore = createTaskStore((key) => key, Object.assign({}, deps, { tcSnapshot: real.tcSnapshot, tcMergeSnapshot: real.tcMergeSnapshot }))
+  await realStore.load()
+  await realStore.loadMeta()
+  const projected = realStore.getSnapshot()
+  assert.deepEqual(projected.archiveSettings, stateAnswer.archiveSettings, 'the stored archive settings survive the real projection')
+  assert.equal(projected.archivedIndexCount, 12, 'the board index count survives the real projection')
+  assert.equal(projected.archivedCount, 12, '/meta still supplies the archive file count')
+  assert.equal(projected.boardSize.bytes, 900000, 'the board size the settings page prints survives')
+
+  // A delta frame that OMITS the fields keeps the last good values (an older or
+  // partial Host must not blank the section back to its defaults).
+  globalThis.fetch = async () => ({ json: async () => ({ ok: true, full: false, seq: 6, tasks: [], removed: [] }) })
+  await realStore.load()
+  const carried = realStore.getSnapshot()
+  assert.deepEqual(carried.archiveSettings, stateAnswer.archiveSettings, 'a delta without the fields keeps the stored archive settings')
+  assert.equal(carried.archivedIndexCount, 12, 'a delta without the fields keeps the index count')
+
+  // ... and a delta that DOES carry them updates them.
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      ok: true,
+      full: false,
+      seq: 7,
+      tasks: [],
+      removed: [],
+      archiveSettings: Object.assign({}, stateAnswer.archiveSettings, { enabled: true, doneAfterDays: 30 }),
+      archivedIndexCount: 3,
+    }),
+  })
+  await realStore.load()
+  const updated = realStore.getSnapshot()
+  assert.equal(updated.archiveSettings.enabled, true, 'a delta carries a changed switch')
+  assert.equal(updated.archiveSettings.doneAfterDays, 30, 'a delta carries a changed threshold')
+  assert.equal(updated.archivedIndexCount, 3)
+  console.log('PASS  T-242 the real snapshot projection carries archiveSettings, and deltas keep/update them')
 }
 
 const poll = globalThis.setInterval

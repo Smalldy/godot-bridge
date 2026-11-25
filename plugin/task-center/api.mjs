@@ -2927,6 +2927,15 @@ export function createApi(ctx, options) {
     if (settings.enabled !== true) return ok({ archived: 0, skipped: 'disabled', seq: board.seq })
     const plan = archivePlanOf(board, settings, now, read.size)
     if (plan.candidates.length === 0) {
+      // T-242: the index is DERIVED, so a board can lose it without losing a
+      // card — an older plugin row rewriting the board drops the additive fields,
+      // or a hand repair strips them. Without the index every dependent of an
+      // archived card reads 'broken' and the queue stalls, and no later sweep
+      // would rebuild it (there is nothing left to move). Repair it ONCE, only in
+      // exactly that state (empty index + cards on disk), so a healthy board pays
+      // nothing for this check.
+      const repaired = await repairArchivedIndex(projectPath, board, now)
+      if (repaired !== null) return repaired
       // Nothing to move. NO write happens: a tick on a healthy board is one board
       // read (already cached) and nothing else.
       return ok({
@@ -3004,6 +3013,54 @@ export function createApi(ctx, options) {
     // and removing those is real progress even though nothing was appended.
     const removedNow = board.tasks.filter((task) => moved.has(String(task.id))).length
     return ok({ archived: removedNow, ids: Array.from(moved), seq: applied.board.seq, bytesBefore: read.size })
+  }
+
+  /**
+   * T-242: rebuild the derived archived-card index from the archive FILE.
+   *
+   * Runs only when the board has NO index at all and the archive has cards; a
+   * successful repair makes the condition false forever, and a failure backs off
+   * for ten minutes so a broken archive cannot turn every tick into a 4 MB read.
+   * A repair can never lose a card: it only ADDS index rows.
+   */
+  async function repairArchivedIndex(projectPath, board, now) {
+    if (Array.isArray(board.archivedDone) && board.archivedDone.length > 0) return null
+    const lastAttempt = state.memory.archiveIndexRepair
+    if (lastAttempt !== undefined && lastAttempt !== null && lastAttempt.project === projectPath && now - lastAttempt.at < 10 * 60 * 1000) return null
+    const archived = await readArchivedCards(projectPath, now)
+    if (archived.ok !== true || archived.tasks.length === 0) {
+      state.memory.archiveIndexRepair = { project: projectPath, at: now }
+      return null
+    }
+    const rows = archivedIndexRows(archived.tasks, now)
+    if (rows.length === 0) {
+      state.memory.archiveIndexRepair = { project: projectPath, at: now }
+      return null
+    }
+    const applied = await state.apply(
+      projectPath,
+      (current) => {
+        if (Array.isArray(current.archivedDone) && current.archivedDone.length > 0) return null
+        return {
+          ok: true,
+          board: Object.assign({}, current, {
+            archivedDone: mergeArchivedIndex(current.archivedDone, rows),
+            seq: (Number.isFinite(current.seq) ? current.seq : 1) + 1,
+          }),
+          events: [],
+        }
+      },
+      writePolicyFor(projectPath),
+    )
+    if (applied.failed !== null) {
+      // A repair is best effort: never fail a tick for it, retry in ten minutes.
+      state.memory.archiveIndexRepair = { project: projectPath, at: now }
+      return null
+    }
+    state.memory.archiveIndexRepair = { project: projectPath, at: now }
+    // Dependents may now resolve: force the next panel answer to rebuild.
+    state.memory.archiveEpoch = { project: projectPath, at: now }
+    return ok({ archived: 0, skipped: 'index-repaired', index: rows.length, seq: applied.board.seq })
   }
 
   /**
@@ -5016,8 +5073,11 @@ export function createApi(ctx, options) {
       full: full,
       removed: removed,
       // T-210: the archive index is part of the deferred metadata (the cards do
-      // not need it); a light answer names it as deferred instead of guessing 0.
-      archivedCount: heavy === null ? DEFERRED_ARCHIVE.archivedCount : heavy.archive.archivedCount,
+      // not need it). T-242: the LIGHT answer still names the count it already
+      // knows for free — the board's own archived-card index — so the status line
+      // and the settings page never show "0 archived" while /meta is in flight;
+      // /meta then replaces it with the FILE count (legacy archives included).
+      archivedCount: heavy === null ? (Array.isArray(board.archivedDone) ? board.archivedDone.length : 0) : heavy.archive.archivedCount,
       archiveRange: heavy === null ? DEFERRED_ARCHIVE.archiveRange : heavy.archive.archiveRange,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
@@ -7860,9 +7920,11 @@ export function createApi(ctx, options) {
   }
 
   async function autoMergePending(projectPath) {
-    // The host calls this every few seconds (index.mjs), so this is the sweep's
-    // real trigger: due at boot and once per 24h after that. A failure here never
-    // blocks merging.
+    // The host calls this every few seconds (index.mjs:372-381), so this is the
+    // archive sweep's real trigger — at boot and on every tick after it. There is
+    // NO time gate any more (T-242): the sweep decides for itself whether anything
+    // is due and is a pure no-op (one cached board read) when nothing is. A
+    // failure here never blocks merging.
     let archiveResult = null
     try {
       archiveResult = await maybeArchive(projectPath)

@@ -3573,6 +3573,15 @@ function tcHostSessionId() {
 				seq: Number.isFinite(payload.seq) ? payload.seq : null,
 				archivedCount: Number.isFinite(payload.archivedCount) ? payload.archivedCount : 0,
 				archiveRange: payload.archiveRange === undefined ? null : payload.archiveRange,
+				// T-242: the done-card archive the settings page edits. Both fields
+				// MUST survive this projection: the page reads their stored values, and
+				// dropping them silently rendered the defaults while the Host already
+				// stored different ones (review round 1). archivedCount above is the
+				// archive FILE's count (deferred /meta); archivedIndexCount is what the
+				// hot board already knows, so the first paint needs no extra read.
+				archiveSettings:
+					payload.archiveSettings !== undefined && payload.archiveSettings !== null && typeof payload.archiveSettings === 'object' ? payload.archiveSettings : null,
+				archivedIndexCount: Number.isFinite(payload.archivedIndexCount) ? payload.archivedIndexCount : 0,
 				full: payload.full !== false,
 				details: {},
 				updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : null,
@@ -3603,6 +3612,20 @@ function tcHostSessionId() {
 					details: details,
 					seq: Number.isFinite(payload.seq) ? payload.seq : previous.seq,
 					full: false,
+					// T-242: a delta carries the stored archive settings on every answer,
+					// but an older/short Host may omit them: keep the last good value
+					// instead of letting the merge blank the section back to defaults.
+					archiveSettings:
+						payload.archiveSettings !== undefined && payload.archiveSettings !== null
+							? payload.archiveSettings
+							: previous.archiveSettings === undefined
+								? null
+								: previous.archiveSettings,
+					archivedIndexCount: Number.isFinite(payload.archivedIndexCount)
+						? payload.archivedIndexCount
+						: previous.archivedIndexCount === undefined
+							? 0
+							: previous.archivedIndexCount,
 				})
 			}
 			const next = tcSnapshot(payload, 'host', '')

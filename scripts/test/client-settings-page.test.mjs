@@ -9,6 +9,8 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+// T-242: drive the page with the REAL snapshot projection (review round 1).
+import { loadClientStateProjection } from './support/client-state.mjs'
 
 const require = createRequire(import.meta.url)
 const { createSettingsViews } = require('../../client/src/views/settings-page.cjs')
@@ -381,24 +383,45 @@ console.log('PASS  40-tail + the shipped bundle wire plugins.bundle.config to th
   assert.ok(HEAD.includes("settingsSaved: '已保存派发、决策与归档设置'"), 'the zh saved copy names the project scope')
   assert.ok(HEAD.includes("settingsSaved: 'Saved dispatch, decision and archive settings'"), 'the en saved copy names the project scope')
 }
-// ── T-242: the archive section is a real, page-owned section ───────────────
+// ── T-242: the archive section reads the REAL Host snapshot ────────────────
 // The four knobs mirror plugin/task-center/archive.mjs and the server refuses an
 // out-of-range save; the page pre-checks the same bounds so a typo never leaves
 // the browser, and the footer save drives BOTH halves (dispatch form + archive).
+// The snapshot comes from tcSnapshot() in client/src/15-client-state.part — the
+// SAME projection the shipped panel uses — because review round 1 proved a
+// hand-built snapshot hides a projection that drops these fields.
 {
-  const archiveSnapshot = Object.assign({}, boundSnapshot, {
-    archiveSettings: {
-      enabled: true,
-      doneAfterDays: 21,
-      keepDone: 40,
-      maxBoardBytes: 4 * 1024 * 1024,
-      lastSweepAt: '2026-11-25T10:20:00.000Z',
-      lastSweep: { at: '2026-11-25T10:20:00.000Z', archived: 12, boardBytes: 900000 },
+  const realState = loadClientStateProjection()
+  const projected = realState.tcSnapshot(
+    {
+      ok: true,
+      full: true,
+      project: '/repo',
+      projectRoot: '/repo',
+      seq: 5,
+      tasks: [],
+      counts: {},
+      dispatch: dispatch,
+      metadata: { split: true, light: true, deferred: [], errors: {} },
+      boardSize: { bytes: 902000, limit: 32 * 1024 * 1024, percent: 2.7, level: 'ok', cards: 60, bytesPerCard: 15000, headroomCards: 1000, warning: null },
+      archiveSettings: {
+        enabled: false,
+        doneAfterDays: 21,
+        keepDone: 40,
+        maxBoardBytes: 4 * 1024 * 1024,
+        lastSweepAt: '2026-11-25T10:20:00.000Z',
+        lastSweep: { at: '2026-11-25T10:20:00.000Z', archived: 12, boardBytes: 900000 },
+      },
+      archivedIndexCount: 12,
+      archivedCount: 12,
+      archiveRange: null,
     },
-    archivedCount: 12,
-    archivedIndexCount: 12,
-    boardSize: { bytes: 902000, limit: 32 * 1024 * 1024, percent: 2.7, level: 'ok', cards: 60, bytesPerCard: 15000, headroomCards: 1000, warning: null },
-  })
+    'host',
+    '',
+  )
+  assert.equal(projected.archiveSettings.enabled, false, 'the projection keeps the stored archive settings')
+  assert.equal(projected.archivedIndexCount, 12, 'the projection keeps the board index count')
+  const archiveSnapshot = Object.assign({}, projected, { decisionPolicy: policy })
   const archiveHarness = createHarness()
   const archiveViews = createSettingsViews({ React: archiveHarness.React, h: h, SettingsForm: SettingsForm })
   const archivePage = renderPage(archiveHarness, archiveViews.SettingsPage, pageProps({ snapshot: archiveSnapshot }))
@@ -432,18 +455,27 @@ console.log('PASS  40-tail + the shipped bundle wire plugins.bundle.config to th
   assert.equal(String(daysInput.props.defaultValue), '21', 'the stored day threshold is shown')
   assert.equal(String(keepInput.props.defaultValue), '40', 'the stored keep count is shown')
   assert.equal(String(bytesInput.props.defaultValue), '4', 'the stored byte threshold is shown in MB')
-  assert.equal(enabledInput.props.defaultChecked, true)
+  assert.equal(enabledInput.props.defaultChecked, false, 'a stored enabled:false renders UNCHECKED')
   // No edit => no request.
   posts.length = 0
   let outcome = await archiveElement.props.actions.save()
   assert.deepEqual(outcome, { ok: true, changed: 0 })
   assert.equal(posts.length, 0, 'an untouched archive save asks the host for nothing')
-  // A moved value is one archive patch on the existing settings action.
-  daysInput.props.ref.current = { value: '30' }
+  // A stored disabled archive is switched ON with one click (review round 1: the
+  // first click used to emit a no-op {enabled:false} because the input rendered
+  // the default true value).
+  enabledInput.props.ref.current = { checked: true }
   outcome = await archiveElement.props.actions.save()
   assert.deepEqual(outcome, { ok: true, changed: 1 })
   assert.equal(posts.length, 1)
   assert.equal(posts[0].action, 'settings')
+  assert.deepEqual(posts[0].body, { archive: { enabled: true } })
+  // A moved numeric value is one archive patch on the existing settings action.
+  posts.length = 0
+  enabledInput.props.ref.current = { checked: false }
+  daysInput.props.ref.current = { value: '30' }
+  outcome = await archiveElement.props.actions.save()
+  assert.deepEqual(outcome, { ok: true, changed: 1 })
   assert.deepEqual(posts[0].body, { archive: { doneAfterDays: 30 } })
   // Out-of-range values are refused BEFORE the host is asked.
   const keepRefReset = keepInput.props.ref
@@ -453,7 +485,6 @@ console.log('PASS  40-tail + the shipped bundle wire plugins.bundle.config to th
   assert.equal(outcome.ok, false)
   assert.equal(outcome.error, 'invalidArchiveSetting')
   assert.equal(posts.length, 0, 'an invalid value never reaches the host')
-  keepRefReset.current = { value: '40' }
   // The ONE footer save drives the form stub AND the archive patch.
   posts.length = 0
   saveCalls = 0
@@ -469,7 +500,7 @@ console.log('PASS  40-tail + the shipped bundle wire plugins.bundle.config to th
   assert.deepEqual(posts[0].body, { archive: { doneAfterDays: 45 } })
   const afterBoth = renderPage(archiveHarness, archiveViews.SettingsPage, pageProps({ snapshot: archiveSnapshot }))
   assert.equal(find(afterBoth, (node) => node.props && node.props['data-settings-status'] === 'saved').props.children, 'settingsSaved')
-  console.log('PASS  T-242 the archive theme edits + validates the four knobs, and one footer save drives both')
+  console.log('PASS  T-242 the archive theme renders the REAL snapshot values and one footer save drives both halves')
 }
 
 console.log('PASS  a narrow viewport folds the nav into top tabs');

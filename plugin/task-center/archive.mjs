@@ -176,14 +176,6 @@ function normaliseLastSweep(raw) {
   }
 }
 
-/** Just the four settings (no diagnostics) — what a caller may compare/save. */
-export function archiveSettingsView(raw) {
-  const settings = normaliseArchiveSettings(raw)
-  const out = {}
-  for (const key of ARCHIVE_SETTING_KEYS) out[key] = settings[key]
-  return out
-}
-
 /**
  * Validate ONE settings save. A caller may send any subset of the four keys; a
  * key that is present must be inside its range, and an unknown key is a refusal

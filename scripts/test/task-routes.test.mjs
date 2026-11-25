@@ -1986,6 +1986,12 @@ function archiveHarness() {
 {
   const h = archiveHarness()
   await h.post({ action: 'settings', archive: { enabled: false, keepDone: 5, doneAfterDays: 7 } })
+  const disabledState = (await h.call(STATE_PATH + '?core=1', {})).json()
+  check(
+    'T-242 /state reports the disabled switch and the stored thresholds (the page renders these, not defaults)',
+    disabledState.archiveSettings.enabled === false && disabledState.archiveSettings.doneAfterDays === 7 && disabledState.archiveSettings.keepDone === 5,
+    JSON.stringify(disabledState.archiveSettings),
+  )
   const beforeSeq = h.boardJson().seq
   const beforeTasks = h.boardJson().tasks.map((task) => task.id).sort().join(',')
   let res = await h.post({ action: 'tick' })
@@ -2140,6 +2146,49 @@ function archiveHarness() {
     res.text.substring(0, 400),
   )
   console.log('PASS  T-242 the archiving is two-phase: the board only loses a card after the archive has it')
+}
+
+// ── T-242: a lost derived index is repaired (review round 1, non-blocking) ──
+// archivedDone is DERIVED: an older plugin row rewriting the board drops it, and
+// then nothing is left to archive, so no sweep would ever rebuild it — every
+// dependent of an archived card would read 'broken' and the queue would stall.
+// The sweep repairs it ONCE in exactly that state, and never again.
+{
+  const h = archiveHarness()
+  const cold = { id: 'T-159', title: 'cold done', status: 'done', kind: 'dev', updatedAt: '2026-09-01T00:00:00.000Z', merge: null, history: [] }
+  h.rig.fs.files.set(tasksArchivePath(PROJECT), {
+    text: JSON.stringify({ version: 1, updatedAt: '2026-09-01T00:00:00.000Z', count: 1, tasks: [cold] }),
+    version: 'seed-archive',
+  })
+  seedBoard(
+    h.rig.fs,
+    PROJECT,
+    JSON.stringify({
+      version: 2,
+      seq: 300,
+      tasks: [{ id: 'T-1', title: 'depends on a cold card', status: 'pending', dependsOn: ['T-159'], updatedAt: new Date(ARCHIVE_NOW).toISOString() }],
+      dispatch: { state: 'paused' },
+      archive: { enabled: true, keepDone: 5, doneAfterDays: 7 },
+      archivedDone: [],
+    }),
+  )
+  let res = await h.post({ action: 'get', id: 'T-1' })
+  check('T-242 a lost archived-card index leaves the dependent BROKEN (the stall this repair exists for)', res.json().task.dependency.state === 'broken', JSON.stringify(res.json().task === undefined ? res.json() : res.json().task.dependency))
+  res = await h.post({ action: 'tick' })
+  let payload = res.json()
+  check(
+    'T-242 a sweep with nothing to move repairs the lost index from the archive file',
+    payload.ok === true && payload.archive.ok === true && payload.archive.skipped === 'index-repaired' && payload.archive.index === 1,
+    res.text.substring(0, 400),
+  )
+  check('T-242 the repaired index is written onto the board', h.boardJson().archivedDone.length === 1 && h.boardJson().archivedDone[0].id === 'T-159', JSON.stringify(h.boardJson().archivedDone))
+  res = await h.post({ action: 'get', id: 'T-1' })
+  check('T-242 the dependent resolves again after the repair', res.json().task.dependency.state === 'ready', JSON.stringify(res.json().task === undefined ? res.json() : res.json().task.dependency))
+  res = await h.call(STATE_PATH + '?light=1', {})
+  check('T-242 the light /state names the archive count it already knows (no /meta round-trip)', res.json().archivedCount === 1, JSON.stringify({ archivedCount: res.json().archivedCount }))
+  res = await h.post({ action: 'tick' })
+  check('T-242 the repair is one-shot: the next sweep has nothing to repair', res.json().archive.skipped !== 'index-repaired', res.text.substring(0, 300))
+  console.log('PASS  T-242 a lost derived index is repaired once from the archive, and the light answer names its count')
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
