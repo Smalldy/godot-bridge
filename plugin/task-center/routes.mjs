@@ -270,6 +270,17 @@ export function registerTaskRoutes(ctx, options) {
       const limitRaw = get('limit')
       const cursorRaw = get('cursor')
       const scopeRaw = get('scope')
+      // T-240: `includeArchived=false` asks history for the ACTIVE sessions only.
+      // Absent/true keeps the host-archived sessions (the default history view);
+      // the hot page never carries them (the asking session stays pinned either
+      // way), so the flag only shapes the history page.
+      const includeArchivedRaw = get('includeArchived')
+      const includeArchived =
+        includeArchivedRaw === 'false' || includeArchivedRaw === '0'
+          ? false
+          : includeArchivedRaw === 'true' || includeArchivedRaw === '1'
+            ? true
+            : null
       const payload = await api.metadata(project, {
         sessionId: sessionId,
         resolvedFrom: target.resolvedFrom,
@@ -278,6 +289,7 @@ export function registerTaskRoutes(ctx, options) {
         scopeMode: scopeRaw === 'history' ? 'history' : scopeRaw === 'hot' ? 'hot' : null,
         scopeLimit: limitRaw === null || limitRaw === '' ? null : Number(limitRaw),
         scopeCursor: cursorRaw === null || cursorRaw === '' ? null : cursorRaw,
+        scopeIncludeArchived: includeArchived,
         timings: get('timings') === '1',
         refresh: get('refresh') === '1',
       })

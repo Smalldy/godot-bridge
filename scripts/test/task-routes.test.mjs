@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, ACTIVITY_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
 import { pruneBoundedCache } from '../../plugin/task-center/api.mjs'
 import { boardCacheStats, boardPath } from '../../plugin/task-center/board.mjs'
+import { createSessionArchive } from '../../plugin/task-center/state.mjs'
 import { TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
 import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 
@@ -1418,6 +1419,232 @@ function seedManyCards(rig, count) {
   } finally {
     if (savedSessionsDir === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
     else process.env.GODOT_BRIDGE_SESSIONS_DIR = savedSessionsDir
+  }
+}
+
+// ── T-240: hot scope drops ARCHIVED sessions, history still reaches them ────
+// The host's ARCHIVE state is the only source: <home>/.dsh/storages/workspace.json
+// → global.archivedSessionIds. A DSH session directory that still exists proves
+// the session was SEEN, not that it is active, so it is never the archive source.
+// The hot working set is the active sessions (the asking session stays pinned
+// even when archived), the history page keeps the archive unless
+// includeArchived=false, and the counts describe the whole project.
+{
+  const sessionsDir = mkdtempSync(join(tmpdir(), 'gb-t240-sessions-'))
+  const storageDirs = []
+  const savedSessionsDir = process.env.GODOT_BRIDGE_SESSIONS_DIR
+  const savedStorage = process.env.GODOT_BRIDGE_WORKSPACE_STORAGE
+  try {
+    const NUMBERED = 29
+    const sessionIds = []
+    for (let index = 0; index < NUMBERED; index += 1) sessionIds.push('session-' + String(index).padStart(2, '0'))
+    sessionIds.push(TEST_SESSION)
+    const total = sessionIds.length
+    const ARCHIVED = ['session-02', 'session-05', 'session-09', 'session-13']
+    // Liveness fixture: EVERY participant has a session directory, INCLUDING the
+    // archived ones. Presence on disk is not archive state.
+    mkdirSync(join(sessionsDir, '--fixture-project--'))
+    for (const sessionId of sessionIds) writeFileSync(join(sessionsDir, '--fixture-project--', 'session-' + sessionId), 'x')
+    process.env.GODOT_BRIDGE_SESSIONS_DIR = sessionsDir
+    const storageFor = (archivedIds) => {
+      const dir = mkdtempSync(join(tmpdir(), 'gb-t240-store-'))
+      storageDirs.push(dir)
+      const path = join(dir, 'workspace.json')
+      writeFileSync(path, JSON.stringify({ unit: { name: 'workspace', version: 2 }, global: { archivedSessionIds: archivedIds }, tables: {} }))
+      return path
+    }
+    const boardOf = () =>
+      JSON.stringify({
+        version: 2,
+        seq: 7,
+        tasks: sessionIds.map((sessionId, index) => ({
+          id: 'T-' + String(index + 1),
+          title: 'card of ' + sessionId,
+          kind: 'dev',
+          status: 'done',
+          ownerSession: sessionId,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        })),
+      })
+    const metaCall = async (surface, query) => {
+      const res = response()
+      await surface.byPath.get(META_PATH).handler(request(META_PATH + '?' + query), res)
+      return res.json()
+    }
+    const queryOf = (sessionId, extra) =>
+      'project=' + encodeURIComponent(PROJECT) + '&session=' + encodeURIComponent(sessionId) + (extra === undefined ? '' : '&' + extra)
+    // Walk one history sequence to its end and collect the rows (and pages).
+    const walkScope = async (surface, sessionId, limit, extra) => {
+      const pages = []
+      const rows = []
+      let query = 'scope=history&limit=' + String(limit) + (extra === undefined ? '' : '&' + extra)
+      for (let step = 0; step < 10; step += 1) {
+        const answer = await metaCall(surface, queryOf(sessionId, query))
+        const scope = answer.ok === true && answer.meta !== null && typeof answer.meta === 'object' ? answer.meta.scope : null
+        if (scope === null) return { ok: false, pages: pages, rows: rows }
+        pages.push(scope)
+        for (const row of scope.sessions) rows.push(row)
+        if (scope.nextCursor === null || scope.nextCursor === undefined) return { ok: true, pages: pages, rows: rows }
+        query = 'scope=history&limit=' + String(limit) + '&cursor=' + encodeURIComponent(scope.nextCursor) + (extra === undefined ? '' : '&' + extra)
+      }
+      return { ok: false, pages: pages, rows: rows }
+    }
+
+    // 0) The reader itself: host store in, nothing guessed from the tree.
+    {
+      const storagePath = storageFor(ARCHIVED.concat(['session-99']))
+      const reader = createSessionArchive({ storagePath: storagePath })
+      check('T-240 the host store is the archive source', reader.isArchived('session-02') === true && reader.isArchived('session-99') === true)
+      check(
+        'T-240 a session that merely HAS a directory is not archived',
+        reader.isArchived('session-00') === false && reader.isArchived(TEST_SESSION) === false && reader.archivedSessionIds().size === 5,
+      )
+      check('T-240 both id spellings name the same session', reader.isArchived('02') === true && reader.isArchived('session-02') === true)
+      const missing = createSessionArchive({ storagePath: join(sessionsDir, 'no-such-workspace.json') })
+      check('T-240 a host without the store archives NOTHING', missing.archivedSessionIds().size === 0 && missing.isArchived('session-02') === false)
+      const brokenPath = join(storageDirs[0], 'broken.json')
+      writeFileSync(brokenPath, '{not json')
+      const broken = createSessionArchive({ storagePath: brokenPath })
+      check('T-240 an unreadable store archives NOTHING (never a guess)', broken.archivedSessionIds().size === 0)
+    }
+
+    // 1) The default /meta: active sessions only, exact counts, current first.
+    process.env.GODOT_BRIDGE_WORKSPACE_STORAGE = storageFor(ARCHIVED.concat(['session-99']))
+    const rig = createRig({ taskAgents: createFakeTaskAgents() })
+    seedBoard(rig.fs, PROJECT, boardOf())
+    const surface = install(rig)
+    const hot = await metaCall(surface, queryOf(TEST_SESSION, 'timings=1'))
+    const hotScope = hot.ok === true && hot.meta !== null && typeof hot.meta === 'object' ? hot.meta.scope : null
+    check('T-240 the default /meta answers', hot.ok === true && hotScope !== null, JSON.stringify({ ok: hot.ok }).substring(0, 300))
+    check(
+      'T-240 hot excludes EVERY archived session',
+      hotScope !== null && hotScope.sessions.every((row) => row.archived === false) && ARCHIVED.every((id) => hotScope.sessions.every((row) => row.sessionId !== id)),
+      JSON.stringify(hotScope === null ? null : hotScope.sessions.map((row) => row.sessionId)),
+    )
+    check('T-240 hot reports the WHOLE project archive count', hotScope !== null && hotScope.archivedTotal === ARCHIVED.length, JSON.stringify({ archivedTotal: hotScope === null ? null : hotScope.archivedTotal }))
+    check('T-240 hot contains no archived row', hotScope !== null && hotScope.archivedInPage === 0)
+    check('T-240 the total still counts every participant (archived included)', hotScope !== null && hotScope.total === total, JSON.stringify({ total: hotScope === null ? null : hotScope.total }))
+    check(
+      'T-240 the hot page is still the working set',
+      hotScope !== null && hotScope.sessions.length === 20 && hotScope.summaries.length === 20 && hotScope.limit === 20 && hotScope.mode === 'hot' && hotScope.includeArchived === false,
+      JSON.stringify({ sessions: hotScope === null ? null : hotScope.sessions.length, mode: hotScope === null ? null : hotScope.mode }),
+    )
+    check('T-240 the asking session still leads the hot page', hotScope !== null && hotScope.sessions[0].sessionId === TEST_SESSION && hotScope.summaries[0].sessionId === TEST_SESSION)
+    check('T-240 the scope names the host as the archive source', hotScope !== null && hotScope.archivedSource === 'host')
+    check(
+      'T-240 the old scope fields describe the SAME page, now with archive markers',
+      hotScope !== null &&
+        Array.isArray(hotScope.projectSessions) &&
+        hotScope.projectSessions.length === 20 &&
+        hotScope.projectSessions[0].sessionId === TEST_SESSION &&
+        typeof hotScope.projectSessions[0].archived === 'boolean' &&
+        Array.isArray(hotScope.sessionSummaries) &&
+        hotScope.sessionSummaries.length === 20,
+      JSON.stringify({ sessions: hotScope === null ? null : hotScope.projectSessions.length }),
+    )
+    check(
+      'T-240 the hot cursor still describes the ACTIVE working set',
+      hotScope !== null && hotScope.truncated === true && typeof hotScope.nextCursor === 'string' && hotScope.nextCursor !== '',
+      JSON.stringify({ truncated: hotScope === null ? null : hotScope.truncated }),
+    )
+    // The archive is advertised by archivedTotal, never by a hot "more" that the
+    // cursor could not deliver: a page holding every ACTIVE session is complete
+    // even while the project has an archive, and its nextCursor is null.
+    const wide = await metaCall(surface, queryOf(TEST_SESSION, 'limit=200'))
+    const wideScope = wide.ok === true && wide.meta !== null && typeof wide.meta === 'object' ? wide.meta.scope : null
+    check(
+      'T-240 a hot page holding every ACTIVE session is complete, archive or not',
+      wideScope !== null &&
+        wideScope.sessions.length === total - ARCHIVED.length &&
+        wideScope.sessions.every((row) => row.archived === false) &&
+        wideScope.truncated === false &&
+        wideScope.nextCursor === null &&
+        wideScope.archivedTotal === ARCHIVED.length,
+      JSON.stringify({ sessions: wideScope === null ? null : wideScope.sessions.length, truncated: wideScope === null ? null : wideScope.truncated, archivedTotal: wideScope === null ? null : wideScope.archivedTotal }),
+    )
+
+    // 2) History: the archived sessions are INCLUDED by default.
+    const history = await walkScope(surface, TEST_SESSION, 10)
+    check('T-240 history reaches the archived sessions', history.ok && ARCHIVED.every((id) => history.rows.some((row) => row.sessionId === id)), JSON.stringify(history.rows.map((row) => row.sessionId)))
+    check(
+      'T-240 the history cursor walks EVERY participant exactly once',
+      history.ok && history.rows.length === total && new Set(history.rows.map((row) => row.sessionId)).size === total,
+      JSON.stringify({ rows: history.rows.length, pages: history.pages.length }),
+    )
+    check(
+      'T-240 history marks its archived rows and keeps the project count',
+      history.ok && history.pages.every((scope) => scope.archivedTotal === ARCHIVED.length && scope.includeArchived === true) && history.pages.some((scope) => scope.sessions.some((row) => row.archived === true)),
+      JSON.stringify({ pages: history.pages.map((scope) => scope.archivedTotal) }),
+    )
+
+    // 3) includeArchived=false is the ACTIVE history only.
+    const activeHistory = await walkScope(surface, TEST_SESSION, 10, 'includeArchived=false')
+    check(
+      'T-240 includeArchived=false hides the archived sessions from history',
+      activeHistory.ok && activeHistory.rows.length === total - ARCHIVED.length && activeHistory.rows.every((row) => row.archived === false) && ARCHIVED.every((id) => activeHistory.rows.every((row) => row.sessionId !== id)),
+      JSON.stringify({ rows: activeHistory.rows.length, ids: activeHistory.rows.map((row) => row.sessionId) }),
+    )
+    check(
+      'T-240 includeArchived=false still counts the archive and walks the active set once',
+      activeHistory.ok && activeHistory.pages.every((scope) => scope.archivedTotal === ARCHIVED.length && scope.archivedInPage === 0 && scope.includeArchived === false) && new Set(activeHistory.rows.map((row) => row.sessionId)).size === total - ARCHIVED.length,
+    )
+    const activeOnePage = await metaCall(surface, queryOf(TEST_SESSION, 'scope=history&limit=200&includeArchived=false'))
+    check(
+      'T-240 the route accepts includeArchived=0 as well',
+      activeOnePage.ok === true && activeOnePage.meta.scope.sessions.length === total - ARCHIVED.length && activeOnePage.meta.scope.nextCursor === null,
+      JSON.stringify({ sessions: activeOnePage.meta === null ? null : activeOnePage.meta.scope.sessions.length }),
+    )
+
+    // 4) Following the hot cursor never repeats a row.
+    const fromHot = await walkScope(surface, TEST_SESSION, 20, 'cursor=' + encodeURIComponent(hotScope.nextCursor))
+    const seenIds = hotScope.sessions.map((row) => row.sessionId).concat(fromHot.rows.map((row) => row.sessionId))
+    check(
+      'T-240 following the hot cursor never repeats a session',
+      fromHot.ok && seenIds.length === new Set(seenIds).size && fromHot.rows.every((row) => hotScope.sessions.every((seen) => seen.sessionId !== row.sessionId)),
+      JSON.stringify({ hot: hotScope.sessions.length, rest: fromHot.rows.length, unique: new Set(seenIds).size }),
+    )
+
+    // 5) The CURRENT session stays pinned on hot even when the host archived it.
+    process.env.GODOT_BRIDGE_WORKSPACE_STORAGE = storageFor([TEST_SESSION, 'session-02'])
+    const leadRig = createRig({ taskAgents: createFakeTaskAgents() })
+    seedBoard(leadRig.fs, PROJECT, boardOf())
+    const leadSurface = install(leadRig)
+    const leadHot = await metaCall(leadSurface, queryOf(TEST_SESSION, 'timings=1'))
+    const leadScope = leadHot.ok === true && leadHot.meta !== null && typeof leadHot.meta === 'object' ? leadHot.meta.scope : null
+    check(
+      'T-240 the archived CURRENT session still leads the hot page',
+      leadScope !== null && leadScope.sessions[0].sessionId === TEST_SESSION && leadScope.sessions[0].archived === true,
+      JSON.stringify(leadScope === null ? null : leadScope.sessions.slice(0, 2)),
+    )
+    check(
+      'T-240 ... and its summary is built for the page it leads',
+      leadScope !== null && leadScope.summaries[0].sessionId === TEST_SESSION && leadScope.summaries[0].archived === true,
+      JSON.stringify(leadScope === null ? null : leadScope.summaries.slice(0, 1)),
+    )
+    check(
+      'T-240 hot still hides every OTHER archived session',
+      leadScope !== null &&
+        leadScope.sessions.length === 20 &&
+        leadScope.sessions.slice(1).every((row) => row.archived === false) &&
+        leadScope.sessions.every((row) => row.sessionId !== 'session-02') &&
+        leadScope.archivedInPage === 1 &&
+        leadScope.archivedTotal === 2,
+      JSON.stringify({ sessions: leadScope === null ? null : leadScope.sessions.map((row) => row.sessionId), archivedInPage: leadScope === null ? null : leadScope.archivedInPage }),
+    )
+    check(
+      'T-240 the pinned archived row displaces the tail of the working set',
+      leadScope !== null && leadScope.sessions[1].sessionId === 'session-00' && leadScope.sessions.every((row) => row.sessionId !== 'session-23'),
+      JSON.stringify(leadScope === null ? null : leadScope.sessions.map((row) => row.sessionId)),
+    )
+    console.log('PASS  T-240 hot drops archived sessions, history keeps (or filters) them, the current session stays pinned')
+  } finally {
+    if (savedSessionsDir === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
+    else process.env.GODOT_BRIDGE_SESSIONS_DIR = savedSessionsDir
+    if (savedStorage === undefined) delete process.env.GODOT_BRIDGE_WORKSPACE_STORAGE
+    else process.env.GODOT_BRIDGE_WORKSPACE_STORAGE = savedStorage
+    rmSync(sessionsDir, { recursive: true, force: true })
+    for (const dir of storageDirs) rmSync(dir, { recursive: true, force: true })
   }
 }
 
