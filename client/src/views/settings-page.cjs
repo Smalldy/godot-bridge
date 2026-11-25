@@ -31,11 +31,15 @@ function createSettingsViews(deps) {
 
 	// The theme rail, in reading order. projectScoped themes write into the task
 	// center project, so they are disabled while nothing is bound.
+	// T-242: 'archive' is a PAGE-owned section (the done-card archive knobs); it
+	// is rendered here, not by SettingsForm, because those settings are not
+	// dispatch and have their own stats block.
 	const SECTIONS = [
 		{ key: 'general', labelKey: 'settingsNavGeneral', projectScoped: false },
 		{ key: 'dispatch', labelKey: 'settingsNavDispatch', projectScoped: true },
 		{ key: 'retry', labelKey: 'settingsNavRetry', projectScoped: true },
 		{ key: 'decisions', labelKey: 'settingsNavDecisions', projectScoped: true },
+		{ key: 'archive', labelKey: 'settingsNavArchive', projectScoped: true },
 		{ key: 'engine', labelKey: 'settingsNavEngine', projectScoped: false },
 	]
 
@@ -69,6 +73,215 @@ function createSettingsViews(deps) {
 		return SECTIONS.some(function (entry) { return entry.key === value }) ? value : 'general'
 	}
 
+	// ── T-242: the done-card archive section ─────────────────────────────────
+	// The page owns this section (not SettingsForm): the archive knobs are project
+	// settings with a stats block of their own, and they are saved through the
+	// same 'settings' action the form uses. The defaults and bounds mirror
+	// plugin/task-center/archive.mjs; the client only edits and pre-checks what it
+	// shows — the server validates and never accepts an out-of-range value.
+	const ARCHIVE_DEFAULT_SETTINGS = { enabled: true, doneAfterDays: 14, keepDone: 50, maxBoardBytes: 2 * 1024 * 1024 }
+	const ARCHIVE_DAY_LIMIT = { min: 1, max: 3650 }
+	const ARCHIVE_KEEP_LIMIT = { min: 0, max: 2000 }
+	const ARCHIVE_BYTES_LIMIT = { min: 64 * 1024, max: 32 * 1024 * 1024 }
+
+	function archiveSettingsOf(raw) {
+		const source = raw !== null && raw !== undefined && typeof raw === 'object' ? raw : {}
+		const pick = function (value, limit, fallback) {
+			const number = Number(value)
+			if (!Number.isFinite(number)) return fallback
+			return Math.min(limit.max, Math.max(limit.min, Math.floor(number)))
+		}
+		return {
+			enabled: typeof source.enabled === 'boolean' ? source.enabled : ARCHIVE_DEFAULT_SETTINGS.enabled,
+			doneAfterDays: pick(source.doneAfterDays, ARCHIVE_DAY_LIMIT, ARCHIVE_DEFAULT_SETTINGS.doneAfterDays),
+			keepDone: pick(source.keepDone, ARCHIVE_KEEP_LIMIT, ARCHIVE_DEFAULT_SETTINGS.keepDone),
+			maxBoardBytes: pick(source.maxBoardBytes, ARCHIVE_BYTES_LIMIT, ARCHIVE_DEFAULT_SETTINGS.maxBoardBytes),
+			lastSweepAt: typeof source.lastSweepAt === 'string' ? source.lastSweepAt : null,
+			lastSweep: source.lastSweep !== null && typeof source.lastSweep === 'object' ? source.lastSweep : null,
+		}
+	}
+
+	/** A byte count as MB text (two decimals at most), or null when unknown. */
+	function megabytesOf(bytes) {
+		if (!Number.isFinite(bytes)) return null
+		return String(Math.round((bytes / (1024 * 1024)) * 100) / 100)
+	}
+
+	/**
+	 * The archive section. It PUMPS its save into the page-owned actions slot
+	 * like SettingsForm does, so the one footer drives both from a single render
+	 * (and a second mounted page cannot hijack it).
+	 */
+	function ArchiveSection(props) {
+		const t = props.t
+		// Only the archive FACTS are handed in (never the whole snapshot): the page
+		// must not leak the project object of another surface into this section.
+		const settings = archiveSettingsOf(props.settings)
+		const boardSize = props.boardSize !== null && props.boardSize !== undefined && typeof props.boardSize === 'object' ? props.boardSize : null
+		const active = props.active === true
+		const enabledRef = React.useRef(null)
+		const daysRef = React.useRef(null)
+		const keepRef = React.useRef(null)
+		const bytesRef = React.useRef(null)
+
+		function numberFrom(ref, fallback) {
+			const node = ref !== null && ref !== undefined ? ref.current : null
+			if (node === null || node === undefined) return fallback
+			const raw = String(node.value === undefined || node.value === null ? '' : node.value).trim()
+			if (raw === '') return fallback
+			const value = Number(raw)
+			return Number.isFinite(value) ? value : Number.NaN
+		}
+
+		/** Only the values the user really moved, so a save without edits is free. */
+		function changedPatch() {
+			const node = enabledRef.current
+			const enabled = node === null || node === undefined ? settings.enabled : node.checked === true
+			const doneAfterDays = Math.floor(numberFrom(daysRef, settings.doneAfterDays))
+			const keepDone = Math.floor(numberFrom(keepRef, settings.keepDone))
+			const maxBoardBytes = Math.round(numberFrom(bytesRef, settings.maxBoardBytes / (1024 * 1024)) * 1024 * 1024)
+			const patch = {}
+			if (enabled !== settings.enabled) patch.enabled = enabled
+			if (doneAfterDays !== settings.doneAfterDays) patch.doneAfterDays = doneAfterDays
+			if (keepDone !== settings.keepDone) patch.keepDone = keepDone
+			if (maxBoardBytes !== settings.maxBoardBytes) patch.maxBoardBytes = maxBoardBytes
+			return patch
+		}
+
+		function valid(patch) {
+			if (
+				patch.doneAfterDays !== undefined &&
+				(!Number.isInteger(patch.doneAfterDays) || patch.doneAfterDays < ARCHIVE_DAY_LIMIT.min || patch.doneAfterDays > ARCHIVE_DAY_LIMIT.max)
+			) {
+				return false
+			}
+			if (patch.keepDone !== undefined && (!Number.isInteger(patch.keepDone) || patch.keepDone < ARCHIVE_KEEP_LIMIT.min || patch.keepDone > ARCHIVE_KEEP_LIMIT.max)) return false
+			if (
+				patch.maxBoardBytes !== undefined &&
+				(!Number.isInteger(patch.maxBoardBytes) || patch.maxBoardBytes < ARCHIVE_BYTES_LIMIT.min || patch.maxBoardBytes > ARCHIVE_BYTES_LIMIT.max)
+			) {
+				return false
+			}
+			return true
+		}
+
+		/** Resolves { ok, error?, changed } — the page shows the outcome. */
+		function save() {
+			const patch = changedPatch()
+			if (!valid(patch)) return Promise.resolve({ ok: false, error: t('invalidArchiveSetting') })
+			if (Object.keys(patch).length === 0) return Promise.resolve({ ok: true, changed: 0 })
+			const store = props.store
+			if (store === null || store === undefined || typeof store.send !== 'function') return Promise.resolve({ ok: true, changed: 0 })
+			return Promise.resolve(store.send('settings', { archive: patch })).then(
+				function (result) {
+					if (result !== null && result !== undefined && result.ok === true) return { ok: true, changed: Object.keys(patch).length }
+					const payload = result !== null && result !== undefined ? result.payload : null
+					const code = payload !== null && payload !== undefined && typeof payload.code === 'string' ? payload.code : ''
+					return { ok: false, error: code === 'invalid-archive-setting' ? t('invalidArchiveSetting') : t('error') }
+				},
+				function () {
+					return { ok: false, error: t('error') }
+				},
+			)
+		}
+		if (props.actions !== null && props.actions !== undefined && typeof props.actions === 'object') props.actions.save = save
+
+		const archivedCount = Number.isFinite(props.archivedCount)
+			? Math.floor(props.archivedCount)
+			: Number.isFinite(props.archivedIndexCount)
+				? Math.floor(props.archivedIndexCount)
+				: null
+		const boardBytes = boardSize !== null ? megabytesOf(boardSize.bytes) : null
+		const boardLimit = boardSize !== null ? megabytesOf(boardSize.limit) : null
+		const movedLast = settings.lastSweep !== null && Number.isFinite(settings.lastSweep.archived) ? Math.floor(settings.lastSweep.archived) : 0
+		const stats = [
+			t('settingsArchiveArchivedCount') + ': ' + (archivedCount === null ? t('settingsArchiveCountUnknown') : String(archivedCount)),
+			t('settingsArchiveBoardSize') + ': ' + (boardBytes === null ? t('settingsArchiveCountUnknown') : boardBytes + ' MB' + (boardLimit === null ? '' : ' / ' + boardLimit + ' MB')),
+			t('settingsArchiveLastSweep') +
+				': ' +
+				(settings.lastSweepAt === null
+					? t('settingsArchiveNeverSwept')
+					: settings.lastSweepAt.slice(0, 16).replace('T', ' ') + ' · ' + t('settingsArchiveSweepMoved') + ' ' + String(movedLast)),
+		]
+
+		function field(labelKey, hintKey, input) {
+			return h('div', { className: 'gbt-field' }, h('label', null, t(labelKey)), input, h('p', { className: 'gbt-settingsnote' }, t(hintKey)))
+		}
+
+		return h(
+			'section',
+			{
+				className: 'gbt-settingssection',
+				'data-settings-section': 'archive',
+				'data-archive-active': active ? 'true' : 'false',
+				hidden: active ? undefined : true,
+				'aria-hidden': active ? undefined : 'true',
+			},
+			h(
+				'div',
+				{ className: 'gbt-settingsgroup', 'data-settings-group': 'archive' },
+				h('div', { className: 'gbt-settingsgrouphead' }, t('settingsArchiveGroup')),
+				h('p', { className: 'gbt-settingsnote' }, t('settingsArchiveHint')),
+				h(
+					'div',
+					{ className: 'gbt-settingsinline', 'data-archive-stats': 'true' },
+					stats.map(function (text, index) {
+						return h('span', { key: 'archive-stat-' + String(index), className: 'gbt-chip', 'data-archive-stat': String(index) }, text)
+					}),
+				),
+				h(
+					'label',
+					{ className: 'gbt-policyguard', 'data-archive-field': 'enabled' },
+					h('input', { type: 'checkbox', ref: enabledRef, defaultChecked: settings.enabled, 'data-archive-input': 'enabled' }),
+					t('settingsArchiveEnabled'),
+				),
+				h('p', { className: 'gbt-settingsnote' }, t('settingsArchiveEnabledHint')),
+				field(
+					'settingsArchiveDoneAfterDays',
+					'settingsArchiveDoneAfterDaysHint',
+					h('input', {
+						className: 'gbt-input',
+						type: 'number',
+						min: ARCHIVE_DAY_LIMIT.min,
+						max: ARCHIVE_DAY_LIMIT.max,
+						step: 1,
+						ref: daysRef,
+						defaultValue: String(settings.doneAfterDays),
+						'data-archive-input': 'doneAfterDays',
+					}),
+				),
+				field(
+					'settingsArchiveKeepDone',
+					'settingsArchiveKeepDoneHint',
+					h('input', {
+						className: 'gbt-input',
+						type: 'number',
+						min: ARCHIVE_KEEP_LIMIT.min,
+						max: ARCHIVE_KEEP_LIMIT.max,
+						step: 1,
+						ref: keepRef,
+						defaultValue: String(settings.keepDone),
+						'data-archive-input': 'keepDone',
+					}),
+				),
+				field(
+					'settingsArchiveMaxBoardBytes',
+					'settingsArchiveMaxBoardBytesHint',
+					h('input', {
+						className: 'gbt-input',
+						type: 'number',
+						min: 0.0625,
+						max: 32,
+						step: 0.5,
+						ref: bytesRef,
+						defaultValue: megabytesOf(settings.maxBoardBytes),
+						'data-archive-input': 'maxBoardBytes',
+					}),
+				),
+			),
+		)
+	}
+
 	/**
 	 * The page. Every data input is a prop so the same component can be mounted
 	 * by the task center panel and by the plugin bundle card.
@@ -88,6 +301,11 @@ function createSettingsViews(deps) {
 		// footer of the first one.
 		const actionsRef = React.useRef(null)
 		if (actionsRef.current === null || actionsRef.current === undefined) actionsRef.current = { save: null }
+		// T-242: the archive section publishes into its own slot, so the footer can
+		// drive BOTH saves (dispatch form + archive knobs) without either hijacking
+		// the other.
+		const archiveRef = React.useRef(null)
+		if (archiveRef.current === null || archiveRef.current === undefined) archiveRef.current = { save: null }
 		const [section, setSection] = React.useState(resolveSection(props.initialSection))
 		const [status, setStatus] = React.useState(null)
 		const active = resolveSection(section)
@@ -107,17 +325,26 @@ function createSettingsViews(deps) {
 				return
 			}
 			const actions = actionsRef.current
-			if (actions === null || actions === undefined || typeof actions.save !== 'function') return
-			const pending = actions.save()
-			if (pending === null || pending === undefined || typeof pending.then !== 'function') return
-			pending.then(function (outcome) {
-				const ok = outcome !== null && outcome !== undefined && outcome.ok === true
-				if (ok) {
-					setStatus({ kind: 'saved' })
-					return
+			const archive = archiveRef.current
+			// T-242: ONE footer save writes the dispatch/decision settings AND the
+			// archive knobs. Either may decline to send (nothing changed); a refusal
+			// from either is shown in the footer and reported first.
+			const pending = []
+			if (actions !== null && actions !== undefined && typeof actions.save === 'function') pending.push(actions.save())
+			if (archive !== null && archive !== undefined && typeof archive.save === 'function') pending.push(archive.save())
+			const running = pending.filter(function (entry) {
+				return entry !== null && entry !== undefined && typeof entry.then === 'function'
+			})
+			if (running.length === 0) return
+			return Promise.all(running).then(function (outcomes) {
+				for (const outcome of outcomes) {
+					if (outcome === null || outcome === undefined || outcome.ok === true) continue
+					const text = typeof outcome.error === 'string' && outcome.error !== '' ? outcome.error : t('error')
+					setStatus({ kind: 'error', text: text })
+					return { ok: false, error: text }
 				}
-				const text = outcome !== null && outcome !== undefined && typeof outcome.error === 'string' && outcome.error !== '' ? outcome.error : t('error')
-				setStatus({ kind: 'error', text: text })
+				setStatus({ kind: 'saved' })
+				return { ok: true }
 			})
 		}
 
@@ -223,7 +450,26 @@ function createSettingsViews(deps) {
 				h(
 					'div',
 					{ className: 'gbt-settingspane' },
-					h('div', { className: 'gbt-settingsscroll', 'data-settings-scroll': 'true' }, form),
+					h(
+						'div',
+						{ className: 'gbt-settingsscroll', 'data-settings-scroll': 'true' },
+						// T-242: the archive section is PAGE-owned and always mounted (the nav
+						// only shows/hides it), so a half-typed value survives a trip to
+						// another theme. While it is the active theme the form's own sections
+						// are hidden as a block: SettingsForm maps an unknown section back to
+						// 'general', so leaving it visible would show two themes at once.
+						h(ArchiveSection, {
+							t: t,
+							settings: snapshot.archiveSettings,
+							archivedCount: snapshot.archivedCount,
+							archivedIndexCount: snapshot.archivedIndexCount,
+							boardSize: snapshot.boardSize,
+							store: store,
+							active: active === 'archive',
+							actions: archiveRef.current,
+						}),
+						h('div', { hidden: active === 'archive' ? true : undefined, 'data-settings-formhost': 'true' }, form),
+					),
 					footer,
 				),
 			),

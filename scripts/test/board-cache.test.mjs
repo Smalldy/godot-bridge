@@ -11,6 +11,17 @@
 
 import { join } from 'node:path'
 import { BOARD_VERSION, MAX_BOARD_BYTES, boardCacheStats, boardPath, readBoard, updateBoard } from '../../plugin/task-center/board.mjs'
+// T-242: the cold done-card archive (settings, selection rules, staged writer).
+import {
+  ARCHIVE_DEFAULTS,
+  appendToTaskArchive,
+  archivePlanOf,
+  normaliseArchiveSettings,
+  readTaskArchive,
+  tasksArchivePath,
+  validateArchiveSettingsPatch,
+  writeTaskArchive,
+} from '../../plugin/task-center/archive.mjs'
 import { createFakeFs, seedBoard, PROJECT } from './support/fixtures.mjs'
 
 let failures = 0
@@ -379,6 +390,225 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const recent = await read(fs, projects[16])
   check('T-232 the most recently read project is still memoised', recent.cached === true, JSON.stringify({ cached: recent.cached }))
   console.log('PASS  T-232 the per-host memo is bounded and evicts least-recently-read projects')
+}
+
+// ── T-242: the cold done-card archive ───────────────────────────────────────
+// The 5.6 MB board was paid for on every heartbeat because it kept 226 finished
+// cards. Finished work now moves to .agents/tasks-archive.json. These checks pin
+// the rules that make that safe: the settings bounds, the selection (only done,
+// keepDone, age + size triggers), and the archive's own staged/verified/backed-up
+// CAS writer. The end-to-end sweep is covered by task-routes.test.mjs.
+const NOW_242 = Date.parse('2026-11-26T00:00:00.000Z')
+const DAY_242 = 24 * 60 * 60 * 1000
+const archivedCard = (id, daysAgo, status) => ({
+  id: id,
+  title: id,
+  status: status === undefined ? 'done' : status,
+  kind: 'dev',
+  updatedAt: new Date(NOW_242 - daysAgo * DAY_242).toISOString(),
+  merge: null,
+  history: [],
+})
+const archiveIo = (fs) => ({ fs: fs })
+const archiveOpts = (extra) => Object.assign({ projectPath: PROJECT, now: NOW_242 }, extra === undefined ? {} : extra)
+
+// ── the settings: defaults, clamping, and a refused save ────────────────────
+{
+  const defaults = normaliseArchiveSettings(null)
+  check(
+    'T-242 the archive is enabled by default with the documented defaults',
+    defaults.enabled === true && defaults.doneAfterDays === ARCHIVE_DEFAULTS.doneAfterDays && defaults.keepDone === ARCHIVE_DEFAULTS.keepDone && defaults.maxBoardBytes === ARCHIVE_DEFAULTS.maxBoardBytes && defaults.lastSweepAt === null && defaults.lastSweep === null,
+    JSON.stringify(defaults),
+  )
+  const clamped = normaliseArchiveSettings({ enabled: false, doneAfterDays: 0, keepDone: -5, maxBoardBytes: 1, lastSweepAt: '2026-11-25T10:00:00.000Z', lastSweep: { at: '2026-11-25T10:00:00.000Z', archived: 3, boardBytes: 900 } })
+  check(
+    'T-242 a stored value is clamped into range, never trusted (and diagnostics survive)',
+    clamped.enabled === false && clamped.doneAfterDays === 1 && clamped.keepDone === 0 && clamped.maxBoardBytes === 64 * 1024 && clamped.lastSweepAt === '2026-11-25T10:00:00.000Z' && clamped.lastSweep.archived === 3,
+    JSON.stringify(clamped),
+  )
+  const accepted = validateArchiveSettingsPatch({ doneAfterDays: 7, keepDone: 5, maxBoardBytes: 1024 * 1024, enabled: false })
+  check('T-242 a valid settings patch is accepted field by field', accepted.ok === true && accepted.patch.doneAfterDays === 7 && accepted.patch.keepDone === 5 && accepted.patch.maxBoardBytes === 1024 * 1024 && accepted.patch.enabled === false, JSON.stringify(accepted))
+  const refusals = [
+    [{ doneAfterDays: 0 }, 'doneAfterDays'],
+    [{ doneAfterDays: 9999 }, 'doneAfterDays'],
+    [{ doneAfterDays: 1.5 }, 'doneAfterDays'],
+    [{ keepDone: 999999 }, 'keepDone'],
+    [{ keepDone: -1 }, 'keepDone'],
+    [{ maxBoardBytes: 1024 }, 'maxBoardBytes'],
+    [{ enabled: 'yes' }, 'enabled'],
+    [{ nonsense: 1 }, 'nonsense'],
+  ]
+  const refused = refusals.filter((pair) => {
+    const result = validateArchiveSettingsPatch(pair[0])
+    return result.ok !== false || result.code !== 'invalid-archive-setting' || result.field !== pair[1]
+  })
+  check('T-242 every out-of-range or unknown archive setting is refused and named', refused.length === 0, JSON.stringify(refused))
+  check('T-242 an empty patch is refused (a save must name a field)', validateArchiveSettingsPatch({}).ok === false)
+}
+
+// ── the selection: only done, keepDone, age and size triggers ───────────────
+{
+  const disabled = archivePlanOf({ tasks: [archivedCard('T-1', 40), archivedCard('T-2', 60)] }, { enabled: false }, NOW_242, 10 * 1024 * 1024)
+  check('T-242 a disabled archive plans NOTHING (even a huge, ancient board)', disabled.due === null && disabled.candidates.length === 0 && disabled.overBytes === false, JSON.stringify(disabled))
+
+  const mixed = { tasks: [archivedCard('T-1', 40), archivedCard('T-2', 50, 'running'), archivedCard('T-3', 60, 'reviewing'), archivedCard('T-4', 70, 'testing'), archivedCard('T-5', 80, 'pending'), archivedCard('T-6', 90, 'blocked')] }
+  const onlyDone = archivePlanOf(mixed, { enabled: true, keepDone: 0, doneAfterDays: 1 }, NOW_242, 0)
+  check(
+    'T-242 only DONE cards are ever archived (running/reviewing/testing/pending/blocked stay)',
+    onlyDone.candidates.length === 1 && onlyDone.candidates[0].id === 'T-1',
+    JSON.stringify(onlyDone.candidates.map((task) => task.id)),
+  )
+
+  const many = []
+  for (let index = 1; index <= 12; index += 1) many.push(archivedCard('T-' + String(index), index))
+  const kept = archivePlanOf({ tasks: many }, { enabled: true, keepDone: 10, doneAfterDays: 1 }, NOW_242, 1024)
+  check(
+    'T-242 keepDone keeps the NEWEST done cards and archives the oldest beyond it',
+    kept.keptCount === 10 && kept.beyondCount === 2 && kept.candidates.length === 2 && kept.candidates.map((task) => task.id).join(',') === 'T-12,T-11' && kept.due === 'age',
+    JSON.stringify({ kept: kept.keptCount, beyond: kept.beyondCount, ids: kept.candidates.map((task) => task.id) }),
+  )
+
+  const recentBeyond = archivePlanOf({ tasks: many }, { enabled: true, keepDone: 10, doneAfterDays: 14 }, NOW_242, 1024)
+  check(
+    'T-242 a done card beyond keepDone is NOT cold before doneAfterDays',
+    recentBeyond.candidates.length === 0 && recentBeyond.due === null && recentBeyond.coldCount === 0,
+    JSON.stringify({ candidates: recentBeyond.candidates.length, cold: recentBeyond.coldCount }),
+  )
+
+  const size = []
+  for (let index = 1; index <= 20; index += 1) size.push(archivedCard('T-' + String(index), index))
+  const big = archivePlanOf({ tasks: size }, { enabled: true, keepDone: 5, doneAfterDays: 14, maxBoardBytes: 200000 }, NOW_242, 300000)
+  check(
+    'T-242 the size trigger archives the oldest done cards early (keepDone still protected)',
+    big.overBytes === true && big.due === 'size' && big.candidates.length === 7 && big.candidates[0].id === 'T-20' && big.candidates.every((task) => ['T-1', 'T-2', 'T-3', 'T-4', 'T-5'].indexOf(task.id) < 0),
+    JSON.stringify({ over: big.overBytes, due: big.due, ids: big.candidates.map((task) => task.id) }),
+  )
+  const recent = []
+  for (let index = 1; index <= 20; index += 1) recent.push(archivedCard('T-' + String(index), 1))
+  const under = archivePlanOf({ tasks: recent }, { enabled: true, keepDone: 5, doneAfterDays: 14, maxBoardBytes: 2 * 1024 * 1024 }, NOW_242, 300000)
+  check('T-242 a board under the size threshold with no cold cards plans nothing', under.due === null && under.candidates.length === 0 && under.coldCount === 0, JSON.stringify({ due: under.due, cold: under.coldCount }))
+  check('T-242 an empty board never plans anything', archivePlanOf({ tasks: [] }, null, NOW_242, 0).due === null)
+}
+
+// ── the archive file: read, staged write, backup, CAS retry, failure safety ─
+{
+  const fs = createFakeFs()
+  const io = archiveIo(fs)
+  const empty = await readTaskArchive(io, archiveOpts())
+  check('T-242 a missing archive is an EMPTY archive, never an error', empty.ok === true && empty.tasks.length === 0 && empty.version === null && empty.existed === false, JSON.stringify(empty))
+
+  const first = await appendToTaskArchive(io, archiveOpts(), [archivedCard('T-2', 2), archivedCard('T-1', 1)])
+  const created = await readTaskArchive(io, archiveOpts())
+  check(
+    'T-242 the first append creates the archive (newest first) with no backup yet',
+    first.ok === true && first.added.length === 2 && created.ok === true && created.tasks.map((task) => task.id).join(',') === 'T-1,T-2' && fs.files.get(tasksArchivePath(PROJECT) + '.bak') === undefined,
+    JSON.stringify({ first: first.ok, ids: created.ok === true ? created.tasks.map((task) => task.id) : null }),
+  )
+
+  const second = await appendToTaskArchive(io, archiveOpts(), [archivedCard('T-2', 2), archivedCard('T-3', 3)])
+  const backup = fs.files.get(tasksArchivePath(PROJECT) + '.bak')
+  const backupIds = backup === undefined ? [] : JSON.parse(backup.text).tasks.map((task) => task.id)
+  check(
+    'T-242 a second append adds only NEW ids AND backs the previous archive up first',
+    second.ok === true && second.added.join(',') === 'T-3' && backup !== undefined && backupIds.join(',') === 'T-1,T-2',
+    JSON.stringify({ added: second.added, backupIds: backupIds }),
+  )
+
+  // A concurrent writer wins the CAS: the retry re-reads and keeps BOTH sets.
+  const raceFs = createFakeFs()
+  const raceIo = archiveIo(raceFs)
+  let interfered = false
+  raceFs.hooks.beforeWrite = function (intercept) {
+    if (interfered === true || String(intercept.key).slice(-4) === '.tmp') return undefined
+    interfered = true
+    intercept.write(JSON.stringify({ version: 1, updatedAt: new Date(NOW_242).toISOString(), count: 1, tasks: [archivedCard('T-9', 9)] }))
+    return 'stale'
+  }
+  const raced = await appendToTaskArchive(raceIo, archiveOpts(), [archivedCard('T-10', 10)])
+  const racedArchive = await readTaskArchive(raceIo, archiveOpts())
+  check(
+    'T-242 a lost archive CAS retries against the fresh file: no card from either writer is lost',
+    raced.ok === true && raced.attempts === 2 && racedArchive.ok === true && racedArchive.tasks.map((task) => task.id).sort().join(',') === 'T-10,T-9',
+    JSON.stringify({ ok: raced.ok, attempts: raced.attempts, ids: racedArchive.ok === true ? racedArchive.tasks.map((task) => task.id) : null }),
+  )
+
+  // A promoted write that fails leaves the OLD archive intact.
+  const failFs = createFakeFs()
+  const failIo = archiveIo(failFs)
+  await appendToTaskArchive(failIo, archiveOpts(), [archivedCard('T-1', 1)])
+  const failWrite = failFs.writeText
+  failFs.writeText = async function (target, content, expected, signal, policy) {
+    if (String(target.targetKey) === tasksArchivePath(PROJECT)) throw new Error('disk full')
+    return failWrite.call(this, target, content, expected, signal, policy)
+  }
+  const failed = await appendToTaskArchive(failIo, archiveOpts(), [archivedCard('T-2', 2)])
+  const intact = await readTaskArchive(failIo, archiveOpts())
+  check(
+    'T-242 a failed promote leaves the previous archive intact (the cards stay on the board)',
+    failed.ok === false && failed.code === 'archive-unwritable' && intact.ok === true && intact.tasks.map((task) => task.id).join(',') === 'T-1',
+    JSON.stringify({ failure: failed.code, ids: intact.ok === true ? intact.tasks.map((task) => task.id) : null }),
+  )
+
+  // A staged payload that does not read back intact is never promoted.
+  const stageFs = createFakeFs()
+  const stageIo = archiveIo(stageFs)
+  await appendToTaskArchive(stageIo, archiveOpts(), [archivedCard('T-1', 1)])
+  const stageRead = stageFs.readText
+  stageFs.readText = async function (target, signal) {
+    if (String(target.targetKey).slice(-4) === '.tmp') return '{"version":1,"tasks":['
+    return stageRead.call(this, target, signal)
+  }
+  const stageFailed = await writeTaskArchive(stageIo, archiveOpts(), [archivedCard('T-1', 1), archivedCard('T-2', 2)], null)
+  const stageIntact = await readTaskArchive(stageIo, archiveOpts())
+  check(
+    'T-242 a staged archive that does not read back intact is never promoted',
+    stageFailed.ok === false && stageFailed.code === 'archive-unwritable' && stageIntact.tasks.length === 1,
+    JSON.stringify({ failure: stageFailed.code, cards: stageIntact.tasks.length }),
+  )
+
+  // A hand-edited file: duplicates and bad ids are dropped, the rest is readable.
+  const handFs = createFakeFs()
+  const handText = JSON.stringify({ version: 1, tasks: [archivedCard('T-1', 5), archivedCard('T-1', 5), { id: 'not-a-task', title: 'x' }, archivedCard('T-2', 1)] })
+  handFs.files.set(tasksArchivePath(PROJECT), { text: handText, version: 'hand-1' })
+  const hand = await readTaskArchive(archiveIo(handFs), archiveOpts())
+  check('T-242 a hand-edited archive is read defensively (duplicates and foreign ids dropped)', hand.ok === true && hand.tasks.length === 2 && hand.version === 'hand-1', JSON.stringify(hand.ok === true ? hand.tasks.map((task) => task.id) : hand))
+
+  const brokenFs = createFakeFs()
+  brokenFs.files.set(tasksArchivePath(PROJECT), { text: '{not json', version: 'broken' })
+  const broken = await readTaskArchive(archiveIo(brokenFs), archiveOpts())
+  check('T-242 an unparseable archive is a readable failure, never a crash', broken.ok === false && broken.code === 'archive-unparseable', JSON.stringify(broken))
+
+  const futureFs = createFakeFs()
+  futureFs.files.set(tasksArchivePath(PROJECT), { text: JSON.stringify({ version: 9, tasks: [] }), version: 'future' })
+  const future = await readTaskArchive(archiveIo(futureFs), archiveOpts())
+  check('T-242 a future archive version is refused instead of downgraded', future.ok === false && future.code === 'archive-unsupported-version', JSON.stringify(future))
+}
+
+// ── the board file: archive fields survive every read/write ─────────────────
+{
+  const fs = createFakeFs()
+  seedBoard(fs, PROJECT, textOf([taskOf('T-1', 'legacy')], 2))
+  const legacy = await read(fs)
+  check(
+    'T-242 a legacy board reads back with the default archive settings and an empty index',
+    legacy.ok === true && legacy.board.archive.enabled === true && legacy.board.archive.keepDone === ARCHIVE_DEFAULTS.keepDone && Array.isArray(legacy.board.archivedDone) && legacy.board.archivedDone.length === 0,
+    JSON.stringify(legacy.ok === true ? legacy.board.archive : legacy),
+  )
+
+  const written = await updateBoard({ fs: fs }, {
+    projectPath: PROJECT,
+    mutate: (board) => Object.assign({}, board, {
+      archive: Object.assign({}, board.archive, { keepDone: 5, lastSweepAt: '2026-11-25T00:00:00.000Z' }),
+      archivedDone: [{ id: 'T-9', status: 'done', kind: 'dev', mergeStatus: 'merged', at: '2026-11-20T00:00:00.000Z' }, { id: 'nope' }],
+    }),
+  })
+  const reloaded = await read(fs)
+  check(
+    'T-242 a saved archive setting and a normalised archived-card index survive the next read',
+    written.ok === true && reloaded.ok === true && reloaded.board.archive.keepDone === 5 && reloaded.board.archive.lastSweepAt === '2026-11-25T00:00:00.000Z' && reloaded.board.archivedDone.length === 1 && reloaded.board.archivedDone[0].id === 'T-9' && reloaded.board.archivedDone[0].mergeStatus === 'merged',
+    JSON.stringify(reloaded.ok === true ? reloaded.board.archivedDone : reloaded),
+  )
+  check('T-242 the archived-card index costs the cache nothing (the read is a hit after the write)', reloaded.cached === true, JSON.stringify({ cached: reloaded.cached }))
 }
 
 console.log(failures === 0 ? '\nPASS  board cache (T-232)' : '\nFAIL  ' + String(failures) + ' board cache check(s)')

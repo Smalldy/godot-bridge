@@ -110,24 +110,29 @@ const {
   },
 } = dispatchPort
 import {
-  archiveIndexPath,
-  archivePath,
   archiveYears,
   boardCacheStats,
   boardPath,
   boardSizeReport,
-  isArchivable,
-  archiveYearOf,
   projectIdOf,
   projectRefOf,
   readArchive,
-  readArchiveIndex,
   resolveProjectRoot,
   readRoleConfig,
-  writeArchive,
-  writeArchiveIndex,
   writeRoleConfig,
 } from './board.mjs'
+// T-242: the cold done-card archive. The sweep, the archived reads (/task and
+// /list?archived=1) and the settings save all go through this ONE module.
+import {
+  applyArchiveSettings,
+  archivePlanOf,
+  archivedIndexRows,
+  appendToTaskArchive,
+  mergeArchivedIndex,
+  normaliseArchiveSettings,
+  readTaskArchive,
+  validateArchiveSettingsPatch,
+} from './archive.mjs'
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
 // T-153: the handoff inventory/decision rules (pure) — one definition shared by
 // onboard, /state and the create/start gates.
@@ -2866,56 +2871,115 @@ export function createApi(ctx, options) {
   }
 
   /**
-   * Archive sweep: done cards older than 30 days move to .agents/archive/<year>.json.
-   * The archive file is written (temp -> verified -> promoted) BEFORE the board
-   * loses the card, so a failed archive write cannot drop work; the board write
-   * is a single CAS mutation that also bumps seq, and the next state answer is
-   * forced to full so the client rebuilds instead of seeing a half board.
-   * It runs from the explicit tick action at most once per 24h, never per write.
+   * T-242: the cold-archive sweep.
+   *
+   * A done card leaves the hot board when it is no longer one of the newest
+   * keepDone done cards AND (it is older than doneAfterDays OR the board file is
+   * over maxBoardBytes). It is NEVER deleted: it moves to
+   * .agents/tasks-archive.json first (staged, read back, backed up, CAS-promoted)
+   * and only then does ONE board mutation drop it and record its index row.
+   *
+   * The sweep is NOT on the write path: the host tick (autoMergePending) and the
+   * explicit tick action ask for it; a board write never does. It is single
+   * flight per project, so two ticks can never duplicate the work.
+   *
+   * At most ARCHIVE_ROUNDS passes run in one call: the size trigger is a byte
+   * ESTIMATE (cards differ in size), so one pass may not be enough; a second
+   * pass finishes the job instead of waiting for the next 5 s host tick.
    */
-  async function archiveOldDone(projectPath, options) {
-    const opts = options === undefined || options === null ? {} : options
+  const ARCHIVE_ROUNDS = 3
+
+  async function archiveColdDone(projectPath) {
+    let archived = 0
+    const ids = []
+    let seq = null
+    let bytesBefore = null
+    let rounds = 0
+    for (let round = 0; round < ARCHIVE_ROUNDS; round++) {
+      const result = await archiveColdRound(projectPath)
+      if (result.ok !== true) {
+        // A failed pass after a successful one must not hide the progress: the
+        // cards already moved are safe in the archive.
+        if (archived === 0) return result
+        return ok({ archived: archived, ids: ids, seq: seq, bytesBefore: bytesBefore, rounds: rounds, error: result })
+      }
+      if (bytesBefore === null && Number.isFinite(result.bytesBefore)) bytesBefore = result.bytesBefore
+      if (result.archived === 0) {
+        if (rounds === 0) return result
+        break
+      }
+      archived += result.archived
+      for (const id of Array.isArray(result.ids) ? result.ids : []) ids.push(id)
+      if (Number.isFinite(result.seq)) seq = result.seq
+      rounds += 1
+    }
+    return ok({ archived: archived, ids: ids, seq: seq, bytesBefore: bytesBefore, rounds: rounds })
+  }
+
+  /** One pass of the sweep: plan -> archive -> board CAS (see archiveColdDone). */
+  async function archiveColdRound(projectPath) {
     const now = clock()
     const io = { fs: ctx.fs }
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const board = read.board
-    const old = board.tasks.filter((task) => isArchivable(task, now))
-    if (old.length === 0) return ok({ archived: 0, years: [], seq: board.seq, empty: true })
-    const byYear = new Map()
-    for (const task of old) {
-      const year = archiveYearOf(task, now)
-      if (!byYear.has(year)) byYear.set(year, [])
-      byYear.get(year).push(task)
+    const settings = normaliseArchiveSettings(board.archive)
+    if (settings.enabled !== true) return ok({ archived: 0, skipped: 'disabled', seq: board.seq })
+    const plan = archivePlanOf(board, settings, now, read.size)
+    if (plan.candidates.length === 0) {
+      // Nothing to move. NO write happens: a tick on a healthy board is one board
+      // read (already cached) and nothing else.
+      return ok({
+        archived: 0,
+        skipped: plan.doneCount === 0 ? 'no-done' : plan.overBytes ? 'nothing-left' : 'threshold',
+        seq: board.seq,
+        plan: {
+          done: plan.doneCount,
+          kept: plan.keptCount,
+          beyond: plan.beyondCount,
+          cold: plan.coldCount,
+          overBytes: plan.overBytes,
+          boardBytes: plan.boardBytes,
+          maxBoardBytes: plan.maxBoardBytes,
+        },
+      })
     }
-    const archivedIds = []
-    for (const year of Array.from(byYear.keys())) {
-      const existing = await readArchive(io, { projectPath: projectPath, now: now }, year)
-      if (existing.ok !== true) return existing
-      const seen = new Set(existing.tasks.map((task) => String(task.id)))
-      const merged = existing.tasks.concat(byYear.get(year).filter((task) => !seen.has(String(task.id))))
-      if (merged.length === existing.tasks.length) continue
-      const written = await writeArchive(io, { projectPath: projectPath, now: now }, year, merged, existing.version)
-      if (written.ok !== true) return written
-      for (const task of byYear.get(year)) archivedIds.push(String(task.id))
-    }
-    if (archivedIds.length === 0) return ok({ archived: 0, years: [], seq: board.seq, empty: true })
-    const years = Array.from(new Set(Array.from(byYear.keys()))).sort((left, right) => right - left)
-    const known = await readArchiveIndex(io, { projectPath: projectPath, now: now })
-    const indexYears = Array.from(new Set(known.years.concat(years))).sort((left, right) => right - left)
-    const indexWritten = await writeArchiveIndex(io, { projectPath: projectPath, now: now }, indexYears, known.version)
-    if (indexWritten.ok !== true) return indexWritten
-    // All archive writes succeeded: now the board may drop the cards.
-    const removed = new Set(archivedIds)
+    // 1. the ARCHIVE first. A card is only removed from the board once it is
+    //    proven present in the archive file (appendToTaskArchive retries a lost
+    //    CAS against the fresh file, so a concurrent sweep cannot drop a card).
+    const archived = await appendToTaskArchive(
+      io,
+      { projectPath: projectPath, now: now, sandboxPolicy: writePolicyFor(projectPath), ensureDir: ensureDir === null ? undefined : ensureDir },
+      plan.candidates,
+    )
+    if (archived.ok !== true) return archived
+    // Every candidate is in the archive now (appended just now, or already there
+    // from an earlier partial pass), so the removal set is the PLAN, not just the
+    // appended ids.
+    const moved = new Set(plan.candidates.map((task) => String(task.id)))
+    // 2. the index. Cards an EARLIER row archived (this plugin's archive or the
+    //    old per-year files) are folded in too, so a dependency on any archived
+    //    card still resolves to "done".
+    const legacy = await legacyArchivedCards(projectPath, now)
+    const known = new Set(archived.tasks.map((task) => String(task.id)))
+    const allArchived = archived.tasks.concat(legacy.filter((task) => !known.has(String(task.id))))
+    const rows = archivedIndexRows(allArchived, now)
+    const at = new Date(now).toISOString()
     const applied = await state.apply(
       projectPath,
       (current) => {
-        const remaining = current.tasks.filter((task) => !removed.has(String(task.id)))
-        if (remaining.length === current.tasks.length) return null
+        const remaining = current.tasks.filter((task) => !moved.has(String(task.id)))
+        const movedOut = current.tasks.length - remaining.length
+        const mergedRows = mergeArchivedIndex(current.archivedDone, rows)
+        const indexChanged = mergedRows.length !== (Array.isArray(current.archivedDone) ? current.archivedDone.length : 0)
+        if (movedOut === 0 && indexChanged !== true) return null
+        const sweep = movedOut > 0 ? { lastSweepAt: at, lastSweep: { at: at, archived: movedOut, boardBytes: read.size } } : {}
         return {
           ok: true,
           board: Object.assign({}, current, {
             tasks: remaining,
+            archivedDone: mergedRows,
+            archive: Object.assign({}, current.archive, sweep),
             seq: (Number.isFinite(current.seq) ? current.seq : 1) + 1,
           }),
           events: [],
@@ -2924,60 +2988,112 @@ export function createApi(ctx, options) {
       writePolicyFor(projectPath),
     )
     if (applied.failed !== null) {
-      // The cards are already safe in the archive; leaving them on the board is
-      // a duplicate, not a loss, and the next sweep removes them idempotently.
+      // Nothing to do: a previous pass already archived these cards and removed
+      // them (a card can only reach the archive twice after a crash between the
+      // two writes). That is a no-op, not a failure.
+      if (applied.failed.code === 'aborted') return ok({ archived: 0, skipped: 'already-moved', seq: board.seq, bytesBefore: read.size })
+      // The cards are already safe in the archive; leaving them on the board is a
+      // duplicate, not a loss, and the next sweep removes them idempotently.
       return applied.failed
     }
+    // The board changed wholesale: the next panel answer must be a FULL rebuild,
+    // not a delta over cards that no longer exist.
     state.memory.archiveEpoch = { project: projectPath, at: now }
-    return ok({ archived: archivedIds.length, years: years, seq: applied.board.seq, ids: archivedIds })
+    // Count the cards that ACTUALLY left this board: after a crash between the
+    // two writes some candidates are already archived but still on the board,
+    // and removing those is real progress even though nothing was appended.
+    const removedNow = board.tasks.filter((task) => moved.has(String(task.id))).length
+    return ok({ archived: removedNow, ids: Array.from(moved), seq: applied.board.seq, bytesBefore: read.size })
   }
 
-  /** Run the sweep only when due (boot, project switch, or 24h since the last one). */
-  async function maybeArchive(projectPath) {
-    if (state.memory.archiveInFlight !== undefined && state.memory.archiveInFlight !== null) return state.memory.archiveInFlight
-    const run = archiveIfDue(projectPath)
-    state.memory.archiveInFlight = run
-    try {
-      return await run
-    } finally {
-      state.memory.archiveInFlight = null
+  /**
+   * One sweep per project at a time. Two ticks (or a tick and the host's own
+   * sweep) join the SAME run instead of staging two archive payloads for the
+   * same cards.
+   */
+  function archiveInFlightOf() {
+    const current = state.memory.archiveInFlight
+    if (current === undefined || current === null || typeof current.get !== 'function') {
+      state.memory.archiveInFlight = new Map()
     }
+    return state.memory.archiveInFlight
   }
 
-  async function archiveIfDue(projectPath) {
-    const now = clock()
-    const last = state.memory.lastArchive
-    const due = last === undefined || last === null || last.project !== projectPath || now - last.at >= 24 * 60 * 60 * 1000
-    if (!due) return null
-    const result = await archiveOldDone(projectPath)
-    state.memory.lastArchive = { project: projectPath, at: now }
-    return result
+  async function maybeArchive(projectPath) {
+    const key = resolve(projectPath)
+    const inFlight = archiveInFlightOf()
+    const running = inFlight.get(key)
+    if (running !== undefined) return running
+    const run = (async function () {
+      try {
+        return await archiveColdDone(key)
+      } catch (error) {
+        // A sweep failure is never a board failure: the cards stay where they
+        // are and the next tick retries.
+        return failure('archive-failed', 'the archive sweep failed: ' + messageOf(error))
+      } finally {
+        inFlight.delete(key)
+      }
+    })()
+    inFlight.set(key, run)
+    return run
+  }
+
+  /** Legacy per-year archives (the pre-T-242 sweep). Those cards are never
+   * deleted and stay readable; the new sweep simply no longer writes there. */
+  async function legacyArchivedCards(projectPath, now) {
+    const io = { fs: ctx.fs }
+    const years = await archiveYears(io, { projectPath: projectPath, now: now })
+    const cards = []
+    for (const year of years) {
+      const read = await readArchive(io, { projectPath: projectPath, now: now }, year)
+      if (read.ok !== true) continue
+      for (const task of read.tasks) if (task !== null && task !== undefined && typeof task === 'object' && typeof task.id === 'string') cards.push(task)
+    }
+    return cards
+  }
+
+  /** Every archived card of this project: the T-242 file first, then any legacy
+   * per-year archive (deduped by id). */
+  async function readArchivedCards(projectPath, now) {
+    const io = { fs: ctx.fs }
+    const current = await readTaskArchive(io, { projectPath: projectPath, now: now })
+    if (current.ok !== true) return current
+    const tasks = current.tasks.slice()
+    const seen = new Set(tasks.map((task) => String(task.id)))
+    for (const task of await legacyArchivedCards(projectPath, now)) {
+      const id = String(task.id)
+      if (seen.has(id)) continue
+      seen.add(id)
+      tasks.push(task)
+    }
+    return { ok: true, tasks: tasks }
   }
 
   /** Archived cards' count and date range, cached briefly (the panel polls fast). */
   const archiveInfoCache = { project: null, at: 0, value: null }
   async function archiveInfo(projectPath, now) {
     if (archiveInfoCache.project === projectPath && archiveInfoCache.value !== null && now - archiveInfoCache.at < 5000) return archiveInfoCache.value
-    const io = { fs: ctx.fs }
-    const years = await archiveYears(io, { projectPath: projectPath, now: now })
-    let count = 0
-    let oldest = null
-    let newest = null
-    for (const year of years) {
-      const read = await readArchive(io, { projectPath: projectPath, now: now }, year)
-      if (read.ok !== true) continue
-      count += read.tasks.length
+    const read = await readArchivedCards(projectPath, now)
+    let value
+    if (read.ok !== true) {
+      // An unreadable archive is an UNKNOWN count, never "0 archived": the panel
+      // must be able to tell "nothing finished" from "cannot read the file".
+      value = { archivedCount: null, archiveRange: null, archiveYears: [] }
+    } else {
+      let oldest = null
+      let newest = null
       for (const task of read.tasks) {
         const at = Date.parse(String(task.updatedAt === undefined || task.updatedAt === null ? '' : task.updatedAt))
         if (!Number.isFinite(at)) continue
         if (oldest === null || at < oldest) oldest = at
         if (newest === null || at > newest) newest = at
       }
-    }
-    const value = {
-      archivedCount: count,
-      archiveRange: oldest === null || newest === null ? null : { from: new Date(oldest).toISOString(), to: new Date(newest).toISOString() },
-      archiveYears: years,
+      value = {
+        archivedCount: read.tasks.length,
+        archiveRange: oldest === null || newest === null ? null : { from: new Date(oldest).toISOString(), to: new Date(newest).toISOString() },
+        archiveYears: [],
+      }
     }
     archiveInfoCache.project = projectPath
     archiveInfoCache.at = now
@@ -2987,15 +3103,19 @@ export function createApi(ctx, options) {
 
   /** Find an archived task by id (the board no longer has it). */
   async function archivedTask(projectPath, id, now) {
-    const io = { fs: ctx.fs }
-    const years = await archiveYears(io, { projectPath: projectPath, now: now })
-    for (const year of years) {
-      const read = await readArchive(io, { projectPath: projectPath, now: now }, year)
-      if (read.ok !== true) continue
-      const task = read.tasks.filter((entry) => String(entry.id) === String(id))[0]
-      if (task !== undefined) return Object.assign(detailOf({ tasks: read.tasks }, task, now), { archived: true, archiveYear: year, candidate: null })
-    }
-    return null
+    const archived = await readArchivedCards(projectPath, now)
+    if (archived.ok !== true) return null
+    const task = archived.tasks.filter((entry) => String(entry.id) === String(id))[0]
+    if (task === undefined) return null
+    // Build the detail against a board that still knows the hot cards AND the
+    // archived ones, so the card's own dependency graph reads correctly instead
+    // of "every prerequisite is missing".
+    const hot = await readBoardOrFail(projectPath)
+    const context =
+      hot.failed !== undefined
+        ? { tasks: archived.tasks, archivedDone: [] }
+        : { tasks: hot.board.tasks.concat(archived.tasks), archivedDone: hot.board.archivedDone }
+    return Object.assign(detailOf(context, task, now), { archived: true, candidate: null })
   }
 
   /** In-memory delta log: fingerprints per task, a bounded log, one project at a time. */
@@ -4901,6 +5021,12 @@ export function createApi(ctx, options) {
       archiveRange: heavy === null ? DEFERRED_ARCHIVE.archiveRange : heavy.archive.archiveRange,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
+      // T-242: the archive settings the settings page edits, plus the size of the
+      // archived-card index. Both live on the board, so this costs no extra read;
+      // the AUTHORITATIVE archived count stays the deferred /meta field above
+      // (it counts the archive FILE, legacy files included).
+      archiveSettings: normaliseArchiveSettings(board.archive),
+      archivedIndexCount: Array.isArray(board.archivedDone) ? board.archivedDone.length : 0,
       roles: heavy === null ? null : heavy.roles,
       rolePreviews: heavy === null ? null : heavy.rolePreviews,
       worktrees: heavy === null ? DEFERRED_WORKTREES : heavy.worktrees,
@@ -5008,16 +5134,15 @@ export function createApi(ctx, options) {
     const q = query === undefined || query === null ? {} : query
     const now = clock()
     if (q.archived === true || q.archived === '1' || q.archived === 1) {
-      // The archive view: same paging/search shape as the board list, over the
-      // archived cards only (they are all done).
-      const io = { fs: ctx.fs }
-      const years = await archiveYears(io, { projectPath: projectPath, now: now })
-      const all = []
-      for (const year of years) {
-        const read = await readArchive(io, { projectPath: projectPath, now: now }, year)
-        if (read.ok !== true) continue
-        for (const task of read.tasks) all.push(Object.assign({}, task, { archived: true, archiveYear: year }))
-      }
+      // The archive view: the same paging/search shape as the board list, over
+      // the archived cards only (they are all done). T-242: the archive file is
+      // the source; a legacy per-year archive is still read, never written.
+      const archivedRead = await readArchivedCards(projectPath, now)
+      if (archivedRead.ok !== true) return archivedRead
+      const all = archivedRead.tasks.map((task) => Object.assign({}, task, { archived: true }))
+      // The archived set is its own dependency graph: two archived cards can
+      // depend on each other, so the page's cards must not read as 'broken'.
+      const archivedBoard = { tasks: all, archivedDone: archivedIndexRows(all, now) }
       const needle = typeof q.q === 'string' ? q.q.trim().toLowerCase() : ''
       const status = typeof q.status === 'string' && q.status !== '' ? q.status : null
       const limit = Number.isFinite(q.limit) ? Math.max(1, Math.min(200, Math.floor(q.limit))) : 50
@@ -5041,7 +5166,7 @@ export function createApi(ctx, options) {
       const page = rows.slice(0, limit)
       const last = page.length === 0 ? null : page[page.length - 1]
       return ok({
-        tasks: page.map((task) => summaryOf({ tasks: all }, task, now)),
+        tasks: page.map((task) => summaryOf(archivedBoard, task, now)),
         nextCursor: rows.length > limit && last !== null ? String(last.updatedAt) + '|' + String(last.id) : null,
         count: page.length,
         archived: true,
@@ -7910,6 +8035,67 @@ export function createApi(ctx, options) {
     return attachActionEnvelope(action, result, actionContext.writeTracker, projectPath)
   }
 
+  /** The archive keys a settings save carries: nested under 'archive', or the
+   * four flat archive* spellings. Null when the save touched no archive knob. */
+  function archivePatchOf(source) {
+    const input = source === undefined || source === null ? {} : source
+    if (input.archive !== undefined && input.archive !== null) return input.archive
+    const flat = { archiveEnabled: 'enabled', archiveDoneAfterDays: 'doneAfterDays', archiveKeepDone: 'keepDone', archiveMaxBoardBytes: 'maxBoardBytes' }
+    const patch = {}
+    for (const key of Object.keys(flat)) {
+      if (input[key] !== undefined) patch[flat[key]] = input[key]
+    }
+    return Object.keys(patch).length === 0 ? null : patch
+  }
+
+  /** Does this save also carry a dispatch setting the control action owns? */
+  function hasDispatchSettings(source) {
+    const input = source === undefined || source === null ? {} : source
+    return ['maxConcurrent', 'allowSpawn', 'maxAttempts', 'defaultTarget'].some((key) => input[key] !== undefined)
+  }
+
+  /** Validate + store the archive part of one settings save (one board CAS). */
+  async function saveArchiveSettings(source, context, projectPath) {
+    const patch = archivePatchOf(source)
+    if (patch === null) return null
+    const validated = validateArchiveSettingsPatch(patch)
+    if (validated.ok !== true) return validated
+    const applied = await mutate(
+      projectPath,
+      (board) => {
+        const next = applyArchiveSettings(board.archive, validated.patch)
+        return {
+          ok: true,
+          board: Object.assign({}, board, { archive: next, seq: (Number.isFinite(board.seq) ? board.seq : 1) + 1 }),
+          events: [],
+        }
+      },
+      context,
+    )
+    if (applied.ok !== true) return applied
+    return ok({ archive: applied.board.archive })
+  }
+
+  /**
+   * T-242: the panel's settings save. The settings page owns the archive knobs
+   * (enabled / doneAfterDays / keepDone / maxBoardBytes) AND the dispatch ones;
+   * both are ONE user action here. No new action name was added: the archive
+   * knobs are an extension of the settings the panel already saves.
+   */
+  async function settingsAction(source, context, projectPath, dispatchHandler) {
+    if (context === undefined || context === null || context.role !== 'user') {
+      return failure('user-only', 'Dispatch and archive settings belong to the user; ask them to change it in the task center panel.')
+    }
+    const patch = archivePatchOf(source)
+    if (patch === null) return dispatchHandler(source, context, projectPath)
+    const saved = await saveArchiveSettings(source, context, projectPath)
+    if (saved === null || saved.ok !== true) return saved
+    if (!hasDispatchSettings(source)) return ok({ archive: saved.archive })
+    const dispatched = await dispatchHandler(source, context, projectPath)
+    if (dispatched.ok !== true) return dispatched
+    return ok({ archive: saved.archive, dispatch: dispatched.dispatch, events: dispatched.events })
+  }
+
   async function performResolved(action, source, context, projectPath) {
     remember(projectPath, sessionIdOf(context))
     const now = clock()
@@ -7936,7 +8122,14 @@ export function createApi(ctx, options) {
     const taskAdminHandler = taskAdminActions[action]
     if (taskAdminHandler !== undefined) return taskAdminHandler(source, context, projectPath)
     const controlHandler = controlActions[action]
-    if (controlHandler !== undefined) return controlHandler(source, context, projectPath)
+    if (controlHandler !== undefined) {
+      // T-242: the panel's settings page edits the cold-archive knobs through
+      // the SAME user action. Archive keys go to the archive writer, dispatch
+      // keys keep going to the dispatch handler; a refused archive value writes
+      // nothing at all (the stored value is kept) and answers its typed code.
+      if (action === 'settings') return settingsAction(source, context, projectPath, controlHandler)
+      return controlHandler(source, context, projectPath)
+    }
     const mergeHandler = mergeActions[action]
     if (mergeHandler !== undefined) return mergeHandler(source, context, projectPath)
 

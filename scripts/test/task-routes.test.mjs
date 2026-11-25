@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, ACTIVITY_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
 import { pruneBoundedCache } from '../../plugin/task-center/api.mjs'
 import { boardCacheStats, boardPath } from '../../plugin/task-center/board.mjs'
+import { tasksArchivePath } from '../../plugin/task-center/archive.mjs'
 import { createSessionArchive } from '../../plugin/task-center/state.mjs'
 import { TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
 import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
@@ -1898,6 +1899,247 @@ function seedManyCards(rig, count) {
     rmSync(sessionsDir, { recursive: true, force: true })
     rmSync(storageDir, { recursive: true, force: true })
   }
+}
+// ── T-242: the cold done-card archive ───────────────────────────────────────
+// The board is working state, and a 5.6 MB board (226 finished cards) was paid
+// for on every heartbeat. Finished cards now move to .agents/tasks-archive.json.
+// These checks drive the REAL routes: the settings save (valid, invalid, flat),
+// a disabled sweep, the age/keepDone sweep, archived reads, paging, dependency
+// satisfaction, and two concurrent ticks that must not lose a card.
+const ARCHIVE_NOW = Date.parse('2026-11-26T00:00:00.000Z')
+const ARCHIVE_DAY = 24 * 60 * 60 * 1000
+function archiveSeedBoard() {
+  const tasks = []
+  for (let index = 0; index < 60; index += 1) {
+    const at = new Date(ARCHIVE_NOW - (20 + index) * ARCHIVE_DAY).toISOString()
+    tasks.push({
+      id: 'T-' + String(100 + index),
+      title: 'done card ' + String(index),
+      status: 'done',
+      kind: 'dev',
+      updatedAt: at,
+      history: [
+        { at: at, by: 'worker', from: 'running', to: 'done', note: 'done' },
+        { at: new Date(ARCHIVE_NOW - 1 * ARCHIVE_DAY).toISOString(), by: 'tester', from: 'testing', to: 'done', note: 'passed' },
+      ],
+    })
+  }
+  const nowIso = new Date(ARCHIVE_NOW).toISOString()
+  tasks.push({ id: 'T-1', title: 'pending dependent', status: 'pending', dependsOn: ['T-159'], updatedAt: nowIso })
+  tasks.push({ id: 'T-2', title: 'running card', status: 'running', assignee: { name: 'w', session: 's' }, leaseUntil: new Date(ARCHIVE_NOW + 3600000).toISOString(), updatedAt: nowIso })
+  tasks.push({ id: 'T-3', title: 'blocked card', status: 'blocked', updatedAt: nowIso })
+  tasks.push({ id: 'T-4', title: 'reviewing card', status: 'reviewing', updatedAt: nowIso })
+  tasks.push({ id: 'T-5', title: 'testing card', status: 'testing', updatedAt: nowIso })
+  return JSON.stringify({ version: 2, seq: 500, tasks: tasks, dispatch: { state: 'paused' } })
+}
+
+function archiveHarness() {
+  const archiveRig = createRig({ taskAgents: createFakeTaskAgents() })
+  seedBoard(archiveRig.fs, archiveRig.project, archiveSeedBoard())
+  const archiveSurface = install(archiveRig)
+  const callArchive = (url, options) => call(archiveSurface, url, options)
+  const postArchive = async (body) => {
+    const res = response()
+    await archiveSurface.byPath.get(ACTION_PATH).handler(
+      request(ACTION_PATH + '?session=' + encodeURIComponent(TEST_SESSION), { method: 'POST', body: body, headers: { 'content-type': 'application/json' } }),
+      res,
+    )
+    return res
+  }
+  const boardFile = () => archiveRig.fs.files.get(boardPath(archiveRig.project))
+  const boardJson = () => JSON.parse(boardFile().text)
+  const archiveFile = () => archiveRig.fs.files.get(tasksArchivePath(archiveRig.project))
+  return { rig: archiveRig, surface: archiveSurface, call: callArchive, post: postArchive, boardFile: boardFile, boardJson: boardJson, archiveFile: archiveFile }
+}
+
+// ── the settings save: valid, refused (old value kept), flat spelling ────────
+{
+  const h = archiveHarness()
+  let res = await h.call(STATE_PATH + '?core=1', {})
+  let payload = res.json()
+  check(
+    'T-242 /state carries the archive settings and an empty index on a legacy board',
+    payload.ok === true && payload.archiveSettings.enabled === true && payload.archiveSettings.doneAfterDays === 14 && payload.archiveSettings.keepDone === 50 && payload.archiveSettings.maxBoardBytes === 2 * 1024 * 1024 && payload.archivedIndexCount === 0,
+    JSON.stringify(payload.archiveSettings),
+  )
+  res = await h.post({ action: 'settings', archive: { doneAfterDays: 0 } })
+  payload = res.json()
+  check('T-242 an out-of-range archive setting is refused through the route and names the field', payload.ok === false && payload.code === 'invalid-archive-setting' && payload.field === 'doneAfterDays', res.text.substring(0, 400))
+  res = await h.call(STATE_PATH + '?core=1', {})
+  check('T-242 a refused save KEEPS the old value (nothing was written)', res.json().archiveSettings.doneAfterDays === 14, JSON.stringify(res.json().archiveSettings))
+  res = await h.post({ action: 'settings', archive: { doneAfterDays: 7, keepDone: 5, maxBoardBytes: 1024 * 1024 } })
+  payload = res.json()
+  check('T-242 a valid archive save is accepted and answered', payload.ok === true && payload.archive.keepDone === 5 && payload.archive.doneAfterDays === 7, res.text.substring(0, 400))
+  res = await h.post({ action: 'settings', archiveKeepDone: 3 })
+  payload = res.json()
+  check('T-242 the flat archive* spelling is accepted too', payload.ok === true && payload.archive.keepDone === 3, res.text.substring(0, 300))
+  check(
+    'T-242 the stored settings survive into the next /state read',
+    (await h.call(STATE_PATH + '?core=1', {})).json().archiveSettings.maxBoardBytes === 1024 * 1024,
+  )
+  // Restore keepDone 5 for the sweep below.
+  await h.post({ action: 'settings', archive: { keepDone: 5 } })
+  console.log('PASS  T-242 the archive settings are saved/refused through the settings action, old values kept')
+}
+
+// ── disabled => no sweep; enabled => the cold cards move, nothing is lost ───
+{
+  const h = archiveHarness()
+  await h.post({ action: 'settings', archive: { enabled: false, keepDone: 5, doneAfterDays: 7 } })
+  const beforeSeq = h.boardJson().seq
+  const beforeTasks = h.boardJson().tasks.map((task) => task.id).sort().join(',')
+  let res = await h.post({ action: 'tick' })
+  let payload = res.json()
+  check(
+    'T-242 a disabled archive never sweeps: no archive file, no card leaves the board',
+    payload.ok === true &&
+      payload.archive.archived === 0 &&
+      payload.archive.skipped === 'disabled' &&
+      h.boardJson().tasks.length === 65 &&
+      h.boardJson().tasks.map((task) => task.id).sort().join(',') === beforeTasks &&
+      h.boardJson().seq === beforeSeq &&
+      h.archiveFile() === undefined,
+    res.text.substring(0, 300),
+  )
+  const beforeBytes = h.boardFile().text.length
+  await h.post({ action: 'settings', archive: { enabled: true } })
+  res = await h.post({ action: 'tick' })
+  payload = res.json()
+  const keptDone = h.boardJson().tasks.filter((task) => task.status === 'done').map((task) => task.id).sort()
+  const hotIds = h.boardJson().tasks.map((task) => task.id)
+  const archivedIds = JSON.parse(h.archiveFile().text).tasks.map((task) => task.id).sort()
+  check(
+    'T-242 an enabled sweep archives every cold done card and reports it',
+    payload.ok === true && payload.archive.ok === true && payload.archive.archived === 55 && payload.archive.ids.length === 55,
+    res.text.substring(0, 400),
+  )
+  check(
+    'T-242 the hot board keeps the newest keepDone done cards and EVERY active card',
+    keptDone.join(',') === 'T-100,T-101,T-102,T-103,T-104' && ['T-1', 'T-2', 'T-3', 'T-4', 'T-5'].every((id) => hotIds.indexOf(id) >= 0) && hotIds.length === 10,
+    JSON.stringify({ keptDone: keptDone, hot: hotIds }),
+  )
+  check(
+    'T-242 only DONE cards move: running/reviewing/testing/blocked/pending stay on the hot board',
+    ['T-2', 'T-3', 'T-4', 'T-5'].every((id) => archivedIds.indexOf(id) < 0),
+    JSON.stringify(archivedIds.filter((id) => ['T-2', 'T-3', 'T-4', 'T-5'].indexOf(id) >= 0)),
+  )
+  check('T-242 the archive holds exactly the 55 cold cards, newest first', archivedIds.length === 55 && archivedIds[0] === 'T-105' && archivedIds[54] === 'T-159', JSON.stringify(archivedIds.slice(0, 3)) + ' / ' + JSON.stringify(archivedIds.slice(-2)))
+  check('T-242 the hot board FILE got smaller', h.boardFile().text.length < beforeBytes && h.boardJson().tasks.length === 10, JSON.stringify({ before: beforeBytes, after: h.boardFile().text.length }))
+  check(
+    'T-242 the board records the archived-card index (the dependency evidence)',
+    h.boardJson().archivedDone.length === 55 && h.boardJson().archivedDone.every((row) => row.status === 'done' && row.id !== undefined),
+    JSON.stringify(h.boardJson().archivedDone.slice(0, 2)),
+  )
+  check(
+    'T-242 the sweep records when it ran and how many cards it moved',
+    h.boardJson().archive.lastSweepAt !== null && h.boardJson().archive.lastSweep.archived === 55,
+    JSON.stringify(h.boardJson().archive),
+  )
+  console.log('PASS  T-242 the sweep is disabled on demand, then moves exactly the cold done cards and shrinks the board')
+}
+
+// ── archived reads, paging, /state and the dependency graph ─────────────────
+{
+  const h = archiveHarness()
+  await h.post({ action: 'settings', archive: { keepDone: 5, doneAfterDays: 7 } })
+  await h.post({ action: 'tick' })
+  let res = await h.call(TASK_PATH + '?id=T-159', {})
+  let payload = res.json()
+  check(
+    'T-242 /task reads an archived card in full (status, history, archived marker)',
+    payload.ok === true && payload.task.id === 'T-159' && payload.task.status === 'done' && payload.task.archived === true && payload.task.history.length === 2,
+    res.text.substring(0, 500),
+  )
+  res = await h.post({ action: 'get', id: 'T-159' })
+  payload = res.json()
+  check('T-242 the tool get also reads the archive', payload.ok === true && payload.task.id === 'T-159' && payload.task.archived === true, res.text.substring(0, 400))
+  res = await h.call(LIST_PATH + '?archived=1&limit=10', {})
+  payload = res.json()
+  const firstPage = payload.tasks.map((task) => task.id)
+  check(
+    'T-242 /list?archived=1 pages the archive (summary shape, cursor)',
+    payload.ok === true && payload.archived === true && payload.count === 10 && payload.nextCursor !== null && payload.tasks.every((task) => task.status === 'done'),
+    res.text.substring(0, 400),
+  )
+  res = await h.call(LIST_PATH + '?archived=1&limit=10&cursor=' + encodeURIComponent(payload.nextCursor), {})
+  payload = res.json()
+  const secondPage = payload.tasks.map((task) => task.id)
+  const overlap = secondPage.filter((id) => firstPage.indexOf(id) >= 0)
+  check('T-242 the archive cursor never repeats a card across pages', secondPage.length === 10 && overlap.length === 0, JSON.stringify({ first: firstPage.slice(0, 2), second: secondPage.slice(0, 2), overlap: overlap }))
+  res = await h.call(LIST_PATH + '?archived=1&limit=200', {})
+  payload = res.json()
+  check('T-242 the archive list answers the whole cold set', payload.count === 55 && payload.nextCursor === null, JSON.stringify({ count: payload.count, cursor: payload.nextCursor }))
+  res = await h.call(STATE_PATH + '?core=1', {})
+  payload = res.json()
+  const hotIds = payload.tasks.map((task) => task.id)
+  check(
+    'T-242 the hot /state never carries an archived card and counts only the hot ones',
+    hotIds.indexOf('T-159') < 0 && hotIds.length === 10 && payload.counts.done === 5 && payload.archivedIndexCount === 55,
+    JSON.stringify({ tasks: hotIds.length, done: payload.counts.done, index: payload.archivedIndexCount }),
+  )
+  check('T-242 the pending dependent still sees its archived prerequisite as ready', payload.queue.some((task) => task.id === 'T-1') && payload.counts.ready >= 1, JSON.stringify({ ready: payload.counts.ready, queue: payload.queue.map((task) => task.id) }))
+  res = await h.post({ action: 'get', id: 'T-1' })
+  payload = res.json()
+  check(
+    'T-242 the dependency verdict on the dependent is ready (archived done == done)',
+    payload.ok === true && payload.task.dependency.state === 'ready' && payload.task.dependency.brokenOn.length === 0,
+    JSON.stringify(payload.task === undefined ? payload : payload.task.dependency),
+  )
+  res = await h.call(META_PATH + '?refresh=1', {})
+  payload = res.json()
+  check(
+    'T-242 /meta counts the archived cards from the archive file',
+    payload.ok === true && payload.meta.archivedCount === 55 && payload.meta.archiveRange !== null,
+    JSON.stringify({ count: payload.meta.archivedCount, range: payload.meta.archiveRange }),
+  )
+  res = await h.call(TASK_PATH + '?id=T-999', {})
+  check('T-242 an unknown id is still a readable unknown-task refusal', res.json().ok === false && res.json().code === 'unknown-task', res.text.substring(0, 200))
+  console.log('PASS  T-242 archived cards are readable by id and pageable, and dependencies on them still resolve')
+}
+
+// ── two concurrent ticks never lose (or duplicate) a card ───────────────────
+{
+  const h = archiveHarness()
+  await h.post({ action: 'settings', archive: { keepDone: 5, doneAfterDays: 7 } })
+  const [first, second] = await Promise.all([h.post({ action: 'tick' }), h.post({ action: 'tick' })])
+  const archiveTasks = JSON.parse(h.archiveFile().text).tasks.map((task) => task.id)
+  const hotTasks = h.boardJson().tasks.map((task) => task.id)
+  const seen = new Set(archiveTasks)
+  const duplicated = archiveTasks.filter((id, index) => archiveTasks.indexOf(id) !== index)
+  const lost = []
+  for (let index = 0; index < 60; index += 1) {
+    const id = 'T-' + String(100 + index)
+    if (!seen.has(id) && hotTasks.indexOf(id) < 0) lost.push(id)
+  }
+  check(
+    'T-242 two concurrent ticks neither lose nor duplicate a card',
+    first.json().ok === true && second.json().ok === true && lost.length === 0 && duplicated.length === 0 && archiveTasks.length === 55 && hotTasks.length === 10,
+    JSON.stringify({ archive: archiveTasks.length, hot: hotTasks.length, lost: lost, duplicated: duplicated }),
+  )
+  const index = h.boardJson().archivedDone
+  check('T-242 the surviving index has exactly one row per archived card', index.length === 55 && new Set(index.map((row) => row.id)).size === 55, JSON.stringify(index.length))
+  console.log('PASS  T-242 concurrent sweeps are serialised: one card, one place, one index row')
+}
+
+// ── a failed archive write keeps every card on the board ────────────────────
+{
+  const h = archiveHarness()
+  await h.post({ action: 'settings', archive: { keepDone: 5, doneAfterDays: 7 } })
+  const before = h.boardJson().tasks.length
+  const realWrite = h.rig.fs.writeText
+  h.rig.fs.writeText = async function (target, content, expected, signal, policy) {
+    if (String(target.targetKey) === tasksArchivePath(h.rig.project)) throw new Error('disk full')
+    return realWrite.call(this, target, content, expected, signal, policy)
+  }
+  const res = await h.post({ action: 'tick' })
+  const payload = res.json()
+  h.rig.fs.writeText = realWrite
+  check(
+    'T-242 a failed archive write loses NO card: the sweep answers its failure and the board is untouched',
+    payload.ok === true && payload.archive.ok === false && payload.archive.code === 'archive-unwritable' && h.boardJson().tasks.length === before,
+    res.text.substring(0, 400),
+  )
+  console.log('PASS  T-242 the archiving is two-phase: the board only loses a card after the archive has it')
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')

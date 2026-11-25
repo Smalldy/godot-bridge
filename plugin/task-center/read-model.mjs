@@ -190,6 +190,28 @@ function dependencySatisfied(dependency) {
   return dependency.merge.status === 'merged'
 }
 
+/**
+ * T-242: the index row of a done card that has moved to the cold archive, or
+ * undefined. The board carries one small row per archived card so a dependency
+ * never needs a second file read (and the hot path stays a single stat).
+ */
+function archivedDependencyOf(board, id) {
+  if (board === null || typeof board !== 'object' || !Array.isArray(board.archivedDone)) return undefined
+  for (const row of board.archivedDone) {
+    if (row !== null && typeof row === 'object' && String(row.id) === String(id)) return row
+  }
+  return undefined
+}
+
+/** The archived equivalent of dependencySatisfied(): only a DONE card satisfies,
+ * and its merge state still decides whether a dependent may start. */
+function archivedDependencySatisfied(row) {
+  if (row.status !== 'done') return false
+  if (row.kind === INVESTIGATE_KIND) return true
+  if (row.mergeStatus === null || row.mergeStatus === undefined) return true
+  return row.mergeStatus === 'merged'
+}
+
 /** Dependencies that are missing or cancelled make the task BROKEN (visible to
  * the user instead of waiting forever). A done-but-unmerged dependency is not
  * broken: it is still WAITING, and shows up in waitingOn. */
@@ -199,7 +221,19 @@ export function dependencyInfo(board, task) {
   const dependsOn = listOf(task === null || task === undefined ? undefined : task.dependsOn)
   for (const id of dependsOn) {
     const dependency = findTaskIn(tasksOf(board), id)
-    if (dependency === undefined || dependency.status === 'cancelled') {
+    if (dependency === undefined) {
+      // T-242: a done card may have moved to the cold archive. Its index row is
+      // the dependency evidence — the SAME done/merged rule as a hot card — so
+      // archiving a prerequisite can never turn a dependent into 'broken'.
+      const archived = archivedDependencyOf(board, id)
+      if (archived !== undefined) {
+        if (!archivedDependencySatisfied(archived)) waitingOn.push(id)
+        continue
+      }
+      brokenOn.push(id)
+      continue
+    }
+    if (dependency.status === 'cancelled') {
       brokenOn.push(id)
       continue
     }

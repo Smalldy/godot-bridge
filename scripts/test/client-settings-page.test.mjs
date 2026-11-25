@@ -184,8 +184,8 @@ console.log('PASS  page title 设置 + the current project scope line')
 
 // ── the fixed left theme rail ─────────────────────────────────────────────
 const navItems = findAll(tree, (node) => node.type === 'button' && node.props && typeof node.props['data-settings-nav'] === 'string')
-assert.deepEqual(navItems.map((node) => node.props['data-settings-nav']), ['general', 'dispatch', 'retry', 'decisions', 'engine'], 'the rail lists the five themes in order')
-assert.deepEqual(navItems.map((node) => node.props.children), ['settingsNavGeneral', 'settingsNavDispatch', 'settingsNavRetry', 'settingsNavDecisions', 'settingsNavEngine'])
+assert.deepEqual(navItems.map((node) => node.props['data-settings-nav']), ['general', 'dispatch', 'retry', 'decisions', 'archive', 'engine'], 'the rail lists the six themes in order')
+assert.deepEqual(navItems.map((node) => node.props.children), ['settingsNavGeneral', 'settingsNavDispatch', 'settingsNavRetry', 'settingsNavDecisions', 'settingsNavArchive', 'settingsNavEngine'])
 const nav = find(tree, (node) => node.props && node.props['data-settings-nav'] === 'true')
 assert.ok(nav !== null && nav !== undefined, 'the nav landmark exists')
 assert.equal(nav.type, 'nav')
@@ -276,8 +276,8 @@ console.log('PASS  save/cancel live in the footer; save reports, cancel leaves')
   assert.ok(unboundJson.includes('settingsUnboundHint'))
   const unboundNav = findAll(unbound, (node) => node.type === 'button' && node.props && typeof node.props['data-settings-nav'] === 'string')
   assert.equal(unboundNav[0].props.disabled, false, 'the browser theme stays available')
-  assert.equal(unboundNav[4].props.disabled, false, 'the engine path stays available')
-  for (const index of [1, 2, 3]) assert.equal(unboundNav[index].props.disabled, true, 'a project theme is disabled without a project')
+  assert.equal(unboundNav[5].props.disabled, false, 'the engine path stays available')
+  for (const index of [1, 2, 3, 4]) assert.equal(unboundNav[index].props.disabled, true, 'a project theme is disabled without a project')
   const unboundSave = find(unbound, (node) => node.props && node.props['data-settings-save'] === 'true')
   assert.equal(unboundSave.props.disabled, true, 'a project save is disabled without a project')
   // Clicking a disabled project theme must not select it.
@@ -378,9 +378,100 @@ console.log('PASS  40-tail + the shipped bundle wire plugins.bundle.config to th
   assert.ok(HEAD.includes('.gbt-settingssection[hidden]{display:none}'), 'hidden sections are really hidden')
   // The footer save is project-scoped and says so: it does not include the
   // engine path staged in the engine section (a config-scope value).
-  assert.ok(HEAD.includes("settingsSaved: '已保存派发与决策设置'"), 'the zh saved copy names the project scope')
-  assert.ok(HEAD.includes("settingsSaved: 'Saved dispatch and decision settings'"), 'the en saved copy names the project scope')
+  assert.ok(HEAD.includes("settingsSaved: '已保存派发、决策与归档设置'"), 'the zh saved copy names the project scope')
+  assert.ok(HEAD.includes("settingsSaved: 'Saved dispatch, decision and archive settings'"), 'the en saved copy names the project scope')
 }
+// ── T-242: the archive section is a real, page-owned section ───────────────
+// The four knobs mirror plugin/task-center/archive.mjs and the server refuses an
+// out-of-range save; the page pre-checks the same bounds so a typo never leaves
+// the browser, and the footer save drives BOTH halves (dispatch form + archive).
+{
+  const archiveSnapshot = Object.assign({}, boundSnapshot, {
+    archiveSettings: {
+      enabled: true,
+      doneAfterDays: 21,
+      keepDone: 40,
+      maxBoardBytes: 4 * 1024 * 1024,
+      lastSweepAt: '2026-11-25T10:20:00.000Z',
+      lastSweep: { at: '2026-11-25T10:20:00.000Z', archived: 12, boardBytes: 900000 },
+    },
+    archivedCount: 12,
+    archivedIndexCount: 12,
+    boardSize: { bytes: 902000, limit: 32 * 1024 * 1024, percent: 2.7, level: 'ok', cards: 60, bytesPerCard: 15000, headroomCards: 1000, warning: null },
+  })
+  const archiveHarness = createHarness()
+  const archiveViews = createSettingsViews({ React: archiveHarness.React, h: h, SettingsForm: SettingsForm })
+  const archivePage = renderPage(archiveHarness, archiveViews.SettingsPage, pageProps({ snapshot: archiveSnapshot }))
+  const archiveNav = findAll(archivePage, (node) => node.type === 'button' && node.props && node.props['data-settings-nav'] === 'archive')[0]
+  assert.ok(archiveNav !== undefined && archiveNav !== null, 'the rail has an archive theme')
+  assert.equal(archiveNav.props.disabled, false, 'archive is editable while a project is bound')
+  archiveNav.props.onClick()
+  const selected = renderPage(archiveHarness, archiveViews.SettingsPage, pageProps({ snapshot: archiveSnapshot }))
+  assert.equal(selected.props['data-settings-active'], 'archive')
+  assert.equal(find(selected, (node) => node.type === SettingsForm).props.section, 'archive')
+  const formHost = find(selected, (node) => node.props && node.props['data-settings-formhost'] === 'true')
+  assert.equal(formHost.props.hidden, true, 'the form block is hidden while the archive theme is active')
+  const archiveElement = find(selected, (node) => typeof node.type === 'function' && node.props && node.props.active === true && node.props.settings !== undefined)
+  assert.ok(archiveElement !== null && archiveElement !== undefined, 'the page mounts the archive section')
+  archiveElement.props.actions = { save: null }
+  const section = archiveElement.type(archiveElement.props)
+  assert.equal(section.type, 'section')
+  assert.equal(section.props['data-settings-section'], 'archive')
+  assert.equal(section.props['data-archive-active'], 'true')
+  assert.equal(section.props.hidden, undefined)
+  const statText = findAll(section, (node) => node.props && node.props['data-archive-stat'] !== undefined)
+    .map((node) => node.props.children)
+    .join(' | ')
+  assert.ok(statText.includes('12'), 'the archived count is shown: ' + statText)
+  assert.ok(statText.includes('0.86'), 'the board size is shown in MB: ' + statText)
+  assert.ok(statText.includes('2026-11-25 10:20'), 'the last sweep is shown: ' + statText)
+  const daysInput = find(section, (node) => node.props && node.props['data-archive-input'] === 'doneAfterDays')
+  const keepInput = find(section, (node) => node.props && node.props['data-archive-input'] === 'keepDone')
+  const bytesInput = find(section, (node) => node.props && node.props['data-archive-input'] === 'maxBoardBytes')
+  const enabledInput = find(section, (node) => node.props && node.props['data-archive-input'] === 'enabled')
+  assert.equal(String(daysInput.props.defaultValue), '21', 'the stored day threshold is shown')
+  assert.equal(String(keepInput.props.defaultValue), '40', 'the stored keep count is shown')
+  assert.equal(String(bytesInput.props.defaultValue), '4', 'the stored byte threshold is shown in MB')
+  assert.equal(enabledInput.props.defaultChecked, true)
+  // No edit => no request.
+  posts.length = 0
+  let outcome = await archiveElement.props.actions.save()
+  assert.deepEqual(outcome, { ok: true, changed: 0 })
+  assert.equal(posts.length, 0, 'an untouched archive save asks the host for nothing')
+  // A moved value is one archive patch on the existing settings action.
+  daysInput.props.ref.current = { value: '30' }
+  outcome = await archiveElement.props.actions.save()
+  assert.deepEqual(outcome, { ok: true, changed: 1 })
+  assert.equal(posts.length, 1)
+  assert.equal(posts[0].action, 'settings')
+  assert.deepEqual(posts[0].body, { archive: { doneAfterDays: 30 } })
+  // Out-of-range values are refused BEFORE the host is asked.
+  const keepRefReset = keepInput.props.ref
+  keepRefReset.current = { value: '999999' }
+  posts.length = 0
+  outcome = await archiveElement.props.actions.save()
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.error, 'invalidArchiveSetting')
+  assert.equal(posts.length, 0, 'an invalid value never reaches the host')
+  keepRefReset.current = { value: '40' }
+  // The ONE footer save drives the form stub AND the archive patch.
+  posts.length = 0
+  saveCalls = 0
+  saveOutcome = { ok: true }
+  const both = renderPage(archiveHarness, archiveViews.SettingsPage, pageProps({ snapshot: archiveSnapshot }))
+  const bothElement = find(both, (node) => typeof node.type === 'function' && node.props && node.props.active === true && node.props.settings !== undefined)
+  const bothSection = bothElement.type(bothElement.props)
+  find(bothSection, (node) => node.props && node.props['data-archive-input'] === 'doneAfterDays').props.ref.current = { value: '45' }
+  find(both, (node) => node.props && node.props['data-settings-save'] === 'true').props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(saveCalls, 1, 'the dispatch form save still runs')
+  assert.equal(posts.length, 1, 'the archive save runs in the same footer action')
+  assert.deepEqual(posts[0].body, { archive: { doneAfterDays: 45 } })
+  const afterBoth = renderPage(archiveHarness, archiveViews.SettingsPage, pageProps({ snapshot: archiveSnapshot }))
+  assert.equal(find(afterBoth, (node) => node.props && node.props['data-settings-status'] === 'saved').props.children, 'settingsSaved')
+  console.log('PASS  T-242 the archive theme edits + validates the four knobs, and one footer save drives both')
+}
+
 console.log('PASS  a narrow viewport folds the nav into top tabs');
 
 console.log('PASS  SettingsPage is a page with a left rail, a scrolling right column and a save/cancel footer');

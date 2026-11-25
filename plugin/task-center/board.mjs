@@ -41,6 +41,10 @@ import {
   normaliseVerification,
   normaliseVerify,
 } from './schema.mjs'
+// T-242: the cold done-card archive lives next to the board. board.mjs only
+// needs its two normalisers: the settings block and the archived-card index the
+// dependency graph reads.
+import { normaliseArchiveSettings, normaliseArchivedIndex } from './archive.mjs'
 
 export { BOARD_DIRECTORY, BOARD_FILENAME, BOARD_VERSION, MAX_BOARD_BYTES, MAX_HISTORY, ROLE_CONFIG_FILENAME }
 
@@ -348,10 +352,15 @@ export async function resolveProjectRoot(io, options) {
   return failure('no-project-bound', 'No git project with .agents/ or project.godot was found above the session workspace (' + start + '). Pass project explicitly or open one from the panel.')
 }
 
-/** Archive of done tasks that have aged out of the board (one file per year). */
-export const ARCHIVE_VERSION = 1
-export const ARCHIVE_AGE_MS = 30 * 24 * 60 * 60 * 1000
-
+/**
+ * LEGACY archive of done tasks (one file per year), READ-ONLY since T-242.
+ *
+ * The T-242 sweep writes .agents/tasks-archive.json (see archive.mjs); a project
+ * that archived cards with the PREVIOUS row still gets those cards read back
+ * through these helpers, because archiving must never make finished work
+ * unreachable. Nothing writes this format any more, so it carries no selection
+ * rule, no write and no index maintenance of its own.
+ */
 export function archiveDir(projectPath) {
   return join(projectPath, '.agents', 'archive')
 }
@@ -362,18 +371,6 @@ export function archivePath(projectPath, year) {
 
 export function archiveIndexPath(projectPath) {
   return join(archiveDir(projectPath), 'index.json')
-}
-
-/** A done card older than 30 days is archived; everything else stays. */
-export function isArchivable(task, nowMs) {
-  if (task === null || task === undefined || task.status !== 'done') return false
-  const at = Date.parse(String(task.updatedAt === undefined || task.updatedAt === null ? '' : task.updatedAt))
-  return Number.isFinite(at) && at < nowMs - ARCHIVE_AGE_MS
-}
-
-export function archiveYearOf(task, nowMs) {
-  const at = Date.parse(String(task.updatedAt === undefined || task.updatedAt === null ? '' : task.updatedAt))
-  return new Date(Number.isFinite(at) ? at : nowMs).getUTCFullYear()
 }
 
 async function readJsonFile(io, path, options) {
@@ -415,43 +412,6 @@ export async function archiveYears(io, options) {
     if (read.ok === true && read.tasks.length > 0) years.push(year)
   }
   return years
-}
-
-/**
- * Write one archive file. A temp file is written and read back first (the fs
- * service has no rename), so a truncated write never replaces the real archive;
- * only after that succeeds is the year file promoted.
- */
-export async function writeArchive(io, options, year, tasks, version) {
-  const payload = { version: ARCHIVE_VERSION, year: year, updatedAt: iso(Date.now()), tasks: tasks }
-  const text = JSON.stringify(payload, null, 2) + '\n'
-  const tempPath = archivePath(options.projectPath, year) + '.tmp'
-  try {
-    const temp = await io.fs.resolve(tempPath, { cwd: options.projectPath, signal: options.signal })
-    const tempInfo = await io.fs.stat(temp, options.signal)
-    await io.fs.writeText(temp, text, tempInfo === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: tempInfo.version }, options.signal, options.sandboxPolicy)
-    const check = await io.fs.readText(temp, options.signal)
-    JSON.parse(check)
-    const target = await io.fs.resolve(archivePath(options.projectPath, year), { cwd: options.projectPath, signal: options.signal })
-    const expected = version === null || version === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: version }
-    const written = await io.fs.writeText(target, text, expected, options.signal, options.sandboxPolicy)
-    return { ok: true, version: written.version }
-  } catch (error) {
-    return failure('archive-unwritable', 'could not write the archive file: ' + describe(error))
-  }
-}
-
-export async function writeArchiveIndex(io, options, years, version) {
-  const payload = { version: ARCHIVE_VERSION, years: years }
-  const text = JSON.stringify(payload, null, 2) + '\n'
-  try {
-    const target = await io.fs.resolve(archiveIndexPath(options.projectPath), { cwd: options.projectPath, signal: options.signal })
-    const expected = version === null || version === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: version }
-    const written = await io.fs.writeText(target, text, expected, options.signal, options.sandboxPolicy)
-    return { ok: true, version: written.version }
-  } catch (error) {
-    return failure('archive-unwritable', 'could not write the archive index: ' + describe(error))
-  }
 }
 
 /** Absolute path of the optional project role profile file. */
@@ -583,6 +543,10 @@ export function emptyBoard(now) {
     tasks: [],
     dispatch: normaliseDispatch(DISPATCH_DEFAULTS),
     handoff: normaliseHandoff(null),
+    // T-242: the archive settings and the index of cards that already moved out
+    // of the hot board. Both are tiny (a handful of bytes per archived card).
+    archive: normaliseArchiveSettings(null),
+    archivedDone: [],
     updatedAt: at,
   }
 }
@@ -906,6 +870,12 @@ function normaliseBoard(parsed, now) {
       dispatch: normaliseDispatch(source.dispatch),
       // T-153: per-session handoff decisions (join read-only / takeover).
       handoff: normaliseHandoff(source.handoff),
+      // T-242: an ADDITIVE board extension (no BOARD_VERSION bump: an older row
+      // simply drops both fields on its next write, which loses the archive
+      // settings but never a card — the archive file keeps every card). A
+      // version bump would make the old row REFUSE the board, which is worse.
+      archive: normaliseArchiveSettings(source.archive),
+      archivedDone: normaliseArchivedIndex(source.archivedDone),
       updatedAt: isIso(source.updatedAt) ? source.updatedAt : iso(now),
     },
   }
