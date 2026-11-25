@@ -32,6 +32,14 @@ release-notes.md
 # center exists to prevent. What gets versioned here is the proposals and skills
 # under .agents/, which are the artefacts worth reviewing.
 .agents/tasks.json
+# T-242: the cold done-card archive (and its .tmp/.bak companions) is the same
+# machine-local working state as the board — the cards that aged out of
+# tasks.json, never source. A clean clone must not show it as untracked.
+.agents/tasks-archive.json
+.agents/tasks-archive.json.*
+# The pre-T-242 per-year archive is read-only history now (never written); a
+# project that still has it must not commit it either.
+.agents/archive/
 
 # Project leader leases: machine-local cross-process coordination, never source.
 .agents/leader-leases.json

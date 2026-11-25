@@ -360,6 +360,52 @@ export function archiveTextOf(tasks, now) {
 }
 
 /**
+ * Take STALE copies back out of the archive.
+ *
+ * The sweep archives the plan's cards BEFORE it removes them from the board, so
+ * a crash can never lose one. A card a concurrent action reopened or edited in
+ * that window must STAY on the board, and its already-appended copy must come
+ * back out — a hot card may never also be archived.
+ *
+ * Removal is CONTENT-MATCHED, never by id alone: another sweep may have archived
+ * a NEWER version of the same card in the meantime, and that copy is not ours to
+ * delete. The read-merge-write loop makes the removal safe against a concurrent
+ * editor of the same archive, and an id that does not match is simply left alone.
+ *
+ * @returns { ok: true, removed, tasks, version, attempts } or a readable failure.
+ */
+export async function removeFromTaskArchive(io, options, stale) {
+  const opts = options === undefined || options === null ? {} : options
+  const wanted = new Map()
+  for (const task of Array.isArray(stale) ? stale : []) {
+    if (!isRecord(task) || !isTaskId(task.id)) continue
+    wanted.set(String(task.id).trim(), JSON.stringify(task))
+  }
+  if (wanted.size === 0) return { ok: true, removed: [], tasks: null, version: null, attempts: 0 }
+  const attempts = Number.isInteger(opts.attempts) && opts.attempts > 0 ? opts.attempts : 3
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const read = await readTaskArchive(io, opts)
+    if (read.ok !== true) return read
+    const kept = []
+    const removed = []
+    for (const task of read.tasks) {
+      const serialized = wanted.get(String(task.id))
+      if (serialized !== undefined && JSON.stringify(task) === serialized) {
+        removed.push(String(task.id))
+        continue
+      }
+      kept.push(task)
+    }
+    if (removed.length === 0) return { ok: true, removed: [], tasks: read.tasks, version: read.version, attempts: attempt }
+    const expectation = read.version === null ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: read.version }
+    const written = await writeTaskArchive(io, opts, kept, expectation)
+    if (written.ok === true) return { ok: true, removed: removed, tasks: kept, version: written.version, attempts: attempt }
+    if (written.code !== 'stale') return written
+  }
+  return failure('archive-busy', 'could not take stale archive copies back out after ' + String(attempts) + ' attempts; they are duplicates of cards still on the board, never a loss')
+}
+
+/**
  * Read .agents/tasks-archive.json.
  *
  * @returns { ok: true, tasks, version, bytes, existed, updatedAt } or

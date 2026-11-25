@@ -131,6 +131,7 @@ import {
   mergeArchivedIndex,
   normaliseArchiveSettings,
   readTaskArchive,
+  removeFromTaskArchive,
   validateArchiveSettingsPatch,
 } from './archive.mjs'
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
@@ -2892,6 +2893,8 @@ export function createApi(ctx, options) {
   async function archiveColdDone(projectPath) {
     let archived = 0
     const ids = []
+    const kept = []
+    let reconcileError = null
     let seq = null
     let bytesBefore = null
     let rounds = 0
@@ -2901,8 +2904,10 @@ export function createApi(ctx, options) {
         // A failed pass after a successful one must not hide the progress: the
         // cards already moved are safe in the archive.
         if (archived === 0) return result
-        return ok({ archived: archived, ids: ids, seq: seq, bytesBefore: bytesBefore, rounds: rounds, error: result })
+        return ok({ archived: archived, ids: ids, kept: kept, reconcileError: reconcileError, seq: seq, bytesBefore: bytesBefore, rounds: rounds, error: result })
       }
+      for (const id of Array.isArray(result.kept) ? result.kept : []) if (kept.indexOf(id) < 0) kept.push(id)
+      if (result.reconcileError !== undefined && result.reconcileError !== null) reconcileError = result.reconcileError
       if (bytesBefore === null && Number.isFinite(result.bytesBefore)) bytesBefore = result.bytesBefore
       if (result.archived === 0) {
         if (rounds === 0) return result
@@ -2913,7 +2918,7 @@ export function createApi(ctx, options) {
       if (Number.isFinite(result.seq)) seq = result.seq
       rounds += 1
     }
-    return ok({ archived: archived, ids: ids, seq: seq, bytesBefore: bytesBefore, rounds: rounds })
+    return ok({ archived: archived, ids: ids, kept: kept, reconcileError: reconcileError, seq: seq, bytesBefore: bytesBefore, rounds: rounds })
   }
 
   /** One pass of the sweep: plan -> archive -> board CAS (see archiveColdDone). */
@@ -2962,27 +2967,51 @@ export function createApi(ctx, options) {
       plan.candidates,
     )
     if (archived.ok !== true) return archived
-    // Every candidate is in the archive now (appended just now, or already there
-    // from an earlier partial pass), so the removal set is the PLAN, not just the
-    // appended ids.
-    const moved = new Set(plan.candidates.map((task) => String(task.id)))
-    // 2. the index. Cards an EARLIER row archived (this plugin's archive or the
-    //    old per-year files) are folded in too, so a dependency on any archived
-    //    card still resolves to "done".
+    // The plan is a SNAPSHOT, not a lock. A user action (reopen/update/...) or
+    // another host can rewrite a planned card between the plan and this write, and
+    // that newer truth MUST win: the mutation below removes a candidate only while
+    // the card is still byte-for-byte the one the archive just holds. Everyone
+    // else stays hot and its already-appended copy is taken back out (a hot card
+    // may never also be archived). updateBoard re-runs the mutation on a fresh
+    // board after a lost CAS, so a write landing mid-sweep is never discarded.
+    const planned = new Map()
+    for (const task of plan.candidates) planned.set(String(task.id), JSON.stringify(task))
+    // Cards an EARLIER row archived (this plugin's archive or the old per-year
+    // files) are folded into the index too, so a dependency on any archived card
+    // still resolves to "done".
     const legacy = await legacyArchivedCards(projectPath, now)
-    const known = new Set(archived.tasks.map((task) => String(task.id)))
-    const allArchived = archived.tasks.concat(legacy.filter((task) => !known.has(String(task.id))))
-    const rows = archivedIndexRows(allArchived, now)
     const at = new Date(now).toISOString()
     const applied = await state.apply(
       projectPath,
       (current) => {
-        const remaining = current.tasks.filter((task) => !moved.has(String(task.id)))
-        const movedOut = current.tasks.length - remaining.length
-        const mergedRows = mergeArchivedIndex(current.archivedDone, rows)
-        const indexChanged = mergedRows.length !== (Array.isArray(current.archivedDone) ? current.archivedDone.length : 0)
-        if (movedOut === 0 && indexChanged !== true) return null
-        const sweep = movedOut > 0 ? { lastSweepAt: at, lastSweep: { at: at, archived: movedOut, boardBytes: read.size } } : {}
+        const remaining = []
+        const removedNow = new Set()
+        const keptNow = new Set()
+        for (const task of current.tasks) {
+          const id = String(task.id)
+          const signature = planned.get(id)
+          if (signature === undefined) {
+            remaining.push(task)
+            continue
+          }
+          if (JSON.stringify(task) !== signature) {
+            // Edited after the plan: keep the user's version, and never index it.
+            keptNow.add(id)
+            remaining.push(task)
+            continue
+          }
+          removedNow.add(id)
+        }
+        const archiveCards = archived.tasks.filter((task) => !keptNow.has(String(task.id)))
+        const known = new Set(archiveCards.map((task) => String(task.id)))
+        const rows = archivedIndexRows(archiveCards.concat(legacy.filter((task) => !known.has(String(task.id)))), now)
+        const previousRows = (Array.isArray(current.archivedDone) ? current.archivedDone : []).filter((row) => {
+          return row !== null && typeof row === 'object' && !keptNow.has(String(row.id))
+        })
+        const mergedRows = mergeArchivedIndex(previousRows, rows)
+        const indexChanged = mergedRows.length !== previousRows.length
+        if (removedNow.size === 0 && indexChanged !== true) return null
+        const sweep = removedNow.size > 0 ? { lastSweepAt: at, lastSweep: { at: at, archived: removedNow.size, boardBytes: read.size } } : {}
         return {
           ok: true,
           board: Object.assign({}, current, {
@@ -2996,23 +3025,48 @@ export function createApi(ctx, options) {
       },
       writePolicyFor(projectPath),
     )
+    // The truth AFTER the write: the board we wrote, or the file as it is now when
+    // the CAS never landed. A planned id still present here is a card that was
+    // edited mid-sweep (or never removed) — its archive copy is the stale one.
+    let currentBoard = applied.failed === null ? applied.board : board
     if (applied.failed !== null) {
-      // Nothing to do: a previous pass already archived these cards and removed
-      // them (a card can only reach the archive twice after a crash between the
-      // two writes). That is a no-op, not a failure.
-      if (applied.failed.code === 'aborted') return ok({ archived: 0, skipped: 'already-moved', seq: board.seq, bytesBefore: read.size })
-      // The cards are already safe in the archive; leaving them on the board is a
-      // duplicate, not a loss, and the next sweep removes them idempotently.
-      return applied.failed
+      const reread = await readBoardOrFail(projectPath)
+      if (reread.failed === undefined) currentBoard = reread.board
     }
+    const present = new Set(currentBoard.tasks.map((task) => String(task.id)))
+    const stale = plan.candidates.filter((task) => present.has(String(task.id)))
+    let reconcileError = null
+    if (stale.length > 0) {
+      const reconciled = await removeFromTaskArchive(
+        io,
+        { projectPath: projectPath, now: now, sandboxPolicy: writePolicyFor(projectPath), ensureDir: ensureDir === null ? undefined : ensureDir },
+        stale,
+      )
+      if (reconciled.ok !== true) {
+        // The board kept the cards (nothing is lost): the stale copies are
+        // duplicates the next sweep retries, never a failed tick.
+        reconcileError = { code: reconciled.code, message: reconciled.message }
+      }
+    }
+    const keptIds = stale.map((task) => String(task.id))
+    if (applied.failed !== null) {
+      if (applied.failed.code !== 'aborted') return Object.assign({}, applied.failed, { kept: keptIds, reconcileError: reconcileError })
+      // Nothing moved: either a previous pass already moved these cards, or every
+      // candidate was edited while the sweep ran. Either way nothing is lost.
+      return ok({
+        archived: 0,
+        skipped: stale.length === 0 ? 'already-moved' : 'candidates-changed',
+        seq: currentBoard.seq,
+        bytesBefore: read.size,
+        kept: keptIds,
+        reconcileError: reconcileError,
+      })
+    }
+    const movedIds = plan.candidates.filter((task) => !present.has(String(task.id))).map((task) => String(task.id))
     // The board changed wholesale: the next panel answer must be a FULL rebuild,
     // not a delta over cards that no longer exist.
     state.memory.archiveEpoch = { project: projectPath, at: now }
-    // Count the cards that ACTUALLY left this board: after a crash between the
-    // two writes some candidates are already archived but still on the board,
-    // and removing those is real progress even though nothing was appended.
-    const removedNow = board.tasks.filter((task) => moved.has(String(task.id))).length
-    return ok({ archived: removedNow, ids: Array.from(moved), seq: applied.board.seq, bytesBefore: read.size })
+    return ok({ archived: movedIds.length, ids: movedIds, kept: keptIds, reconcileError: reconcileError, seq: currentBoard.seq, bytesBefore: read.size })
   }
 
   /**

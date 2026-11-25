@@ -2191,5 +2191,77 @@ function archiveHarness() {
   console.log('PASS  T-242 a lost derived index is repaired once from the archive, and the light answer names its count')
 }
 
+// ── T-242: a write to a candidate card that lands DURING the sweep wins ────
+// The sweep plans from a snapshot, archives the plan, then removes the cards in
+// one board CAS. A user edit/reopen between the plan and that CAS used to be
+// silently discarded: the card was archived as its OLD version and removed from
+// the hot board. The mutation now removes a candidate only while it is still the
+// exact card the archive holds, and takes the stale archive copy back out.
+{
+  for (const variant of ['reopen', 'update']) {
+    const h = archiveHarness()
+    await h.post({ action: 'settings', archive: { keepDone: 5, doneAfterDays: 7 } })
+    // Another process rewrites the board exactly while the sweep writes the
+    // ARCHIVE file: after the plan, before the board CAS.
+    let raced = false
+    h.rig.fs.hooks.beforeWrite = function (intercept) {
+      if (raced === true) return undefined
+      if (String(intercept.key) !== tasksArchivePath(PROJECT)) return undefined
+      raced = true
+      const board = JSON.parse(h.rig.fs.files.get(boardPath(PROJECT)).text)
+      const card = board.tasks.filter((task) => task.id === 'T-159')[0]
+      const at = new Date(ARCHIVE_NOW).toISOString()
+      if (variant === 'reopen') {
+        card.status = 'pending'
+        card.updatedAt = new Date(ARCHIVE_NOW + 1).toISOString()
+        card.history.push({ at: at, by: 'user', from: 'done', to: 'pending', note: 'reopened during the sweep' })
+      } else {
+        card.title = 'EDITED DURING SWEEP'
+        card.updatedAt = new Date(ARCHIVE_NOW + 2).toISOString()
+      }
+      board.seq += 1
+      h.rig.fs.files.set(boardPath(PROJECT), { text: JSON.stringify(board, null, 2) + '\n', version: 'foreign-' + variant })
+      return undefined
+    }
+    const res = await h.post({ action: 'tick' })
+    const payload = res.json()
+    h.rig.fs.hooks.beforeWrite = null
+    const finalBoard = h.boardJson()
+    const card = finalBoard.tasks.filter((task) => task.id === 'T-159')[0]
+    const archivedIds = JSON.parse(h.archiveFile().text).tasks.map((task) => task.id)
+    // A reopened card stops being done (54 moved); an EDITED done card becomes the
+    // NEWEST done card, so the keepDone window shifts and one more cold card
+    // (T-104) moves in the next pass (55 moved). Both are the sweep's own rules.
+    const expectedArchived = variant === 'reopen' ? 54 : 55
+    const expectedHot = variant === 'reopen' ? 11 : 10
+    check(
+      'T-242 a ' + variant + ' landing mid-sweep is never discarded',
+      payload.ok === true &&
+        card !== undefined &&
+        (variant === 'reopen' ? card.status === 'pending' : card.title === 'EDITED DURING SWEEP') &&
+        payload.archive.archived === expectedArchived &&
+        Array.isArray(payload.archive.kept) &&
+        payload.archive.kept.join(',') === 'T-159',
+      JSON.stringify({ archive: payload.archive, card: card === undefined ? null : { status: card.status, title: card.title } }),
+    )
+    check(
+      'T-242 the kept card is not left in the archive and has no index row (a hot card is never archived)',
+      archivedIds.indexOf('T-159') < 0 &&
+        finalBoard.archivedDone.every((row) => row.id !== 'T-159') &&
+        archivedIds.length === expectedArchived &&
+        finalBoard.tasks.length === expectedHot &&
+        finalBoard.archivedDone.length === expectedArchived,
+      JSON.stringify({ archived: archivedIds.length, has: archivedIds.indexOf('T-159') >= 0, hot: finalBoard.tasks.length, index: finalBoard.archivedDone.length }),
+    )
+    const readBack = (await h.post({ action: 'get', id: 'T-159' })).json()
+    check(
+      'T-242 the mid-sweep version stays readable from the hot board',
+      readBack.ok === true && readBack.task.archived === undefined && readBack.task.status === (variant === 'reopen' ? 'pending' : 'done') && (variant === 'reopen' || readBack.task.title === 'EDITED DURING SWEEP'),
+      JSON.stringify({ ok: readBack.ok, archived: readBack.task === undefined ? null : readBack.task.archived, status: readBack.task === undefined ? null : readBack.task.status }),
+    )
+  }
+  console.log('PASS  T-242 a write landing mid-sweep wins: the card stays hot and its stale archive copy is taken back out')
+}
+
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
 process.exit(failures === 0 ? 0 : 1)

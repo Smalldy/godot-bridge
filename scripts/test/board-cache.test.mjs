@@ -18,6 +18,7 @@ import {
   archivePlanOf,
   normaliseArchiveSettings,
   readTaskArchive,
+  removeFromTaskArchive,
   tasksArchivePath,
   validateArchiveSettingsPatch,
   writeTaskArchive,
@@ -582,6 +583,33 @@ const archiveOpts = (extra) => Object.assign({ projectPath: PROJECT, now: NOW_24
   futureFs.files.set(tasksArchivePath(PROJECT), { text: JSON.stringify({ version: 9, tasks: [] }), version: 'future' })
   const future = await readTaskArchive(archiveIo(futureFs), archiveOpts())
   check('T-242 a future archive version is refused instead of downgraded', future.ok === false && future.code === 'archive-unsupported-version', JSON.stringify(future))
+}
+
+// ── the stale-copy reconcile (a concurrent edit beats the sweep) ────────────
+// A sweep appends the planned cards, then a board CAS removes them. A card a user
+// reopened/edited in that window stays hot, so the copy appended a moment ago is
+// STALE and must come back out — but only that exact copy: a NEWER version that
+// another sweep archived legitimately must survive.
+{
+  const fs = createFakeFs()
+  const io = archiveIo(fs)
+  const staleCard = archivedCard('T-2', 2)
+  await appendToTaskArchive(io, archiveOpts(), [archivedCard('T-1', 1), staleCard])
+  const edited = Object.assign({}, staleCard, { title: 'EDITED DURING SWEEP' })
+  const mismatched = await removeFromTaskArchive(io, archiveOpts(), [edited])
+  const unchanged = await readTaskArchive(io, archiveOpts())
+  check(
+    'T-242 a stale-copy removal is content-matched: a DIFFERENT archived version is not ours to delete',
+    mismatched.ok === true && mismatched.removed.length === 0 && unchanged.ok === true && unchanged.tasks.map((task) => task.id).join(',') === 'T-1,T-2',
+    JSON.stringify({ removed: mismatched.removed, archived: unchanged.ok === true ? unchanged.tasks.map((task) => task.id) : null }),
+  )
+  const removed = await removeFromTaskArchive(io, archiveOpts(), [staleCard])
+  const after = await readTaskArchive(io, archiveOpts())
+  check(
+    'T-242 the matching stale copy is taken back out and everything else stays',
+    removed.ok === true && removed.removed.join(',') === 'T-2' && after.ok === true && after.tasks.map((task) => task.id).join(',') === 'T-1',
+    JSON.stringify({ removed: removed.removed, archived: after.ok === true ? after.tasks.map((task) => task.id) : null }),
+  )
 }
 
 // ── the board file: archive fields survive every read/write ─────────────────
