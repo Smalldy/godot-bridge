@@ -1952,6 +1952,48 @@ function archiveHarness() {
   return { rig: archiveRig, surface: archiveSurface, call: callArchive, post: postArchive, boardFile: boardFile, boardJson: boardJson, archiveFile: archiveFile }
 }
 
+// ── a LEGACY (never normalised) board still sweeps on its FIRST tick ─────────
+// board.mjs fills a missing createdAt/updatedAt (and a history row's missing at)
+// from the READ clock, so two reads of the SAME raw card differ in those fields.
+// The sweep removes a card only while the card is still the one it archived, and
+// the raw-JSON comparison could not tell "the reader normalised it" apart from "a
+// user edited it": a board written by an older plugin (or any other writer) then
+// answered archived:0 / skipped:candidates-changed on every tick — and because a
+// deferral writes nothing, nothing would ever persist the normalised shape, so the
+// sweep would never archive that board at all. This drives the real tick on a
+// freshly seeded, never-normalised board.
+{
+  const h = archiveHarness()
+  const beforeText = h.boardFile().text
+  const beforeBytes = beforeText.length
+  const beforeTasks = JSON.parse(beforeText).tasks.length
+  check('T-242 the seeded board really is legacy/raw (no persisted createdAt)', beforeText.indexOf('createdAt') < 0 && beforeTasks === 65, beforeText.substring(0, 160))
+  const res = await h.post({ action: 'tick' })
+  const payload = res.json()
+  const hot = h.boardJson()
+  const archivedIds = JSON.parse(h.archiveFile().text).tasks.map((task) => task.id)
+  const hotIds = hot.tasks.map((task) => task.id)
+  const lost = []
+  for (let index = 0; index < 60; index += 1) {
+    const id = 'T-' + String(100 + index)
+    if (archivedIds.indexOf(id) < 0 && hotIds.indexOf(id) < 0) lost.push(id)
+  }
+  check(
+    'T-242 a legacy board archives on the FIRST tick instead of deferring forever',
+    payload.ok === true && payload.archive.ok === true && payload.archive.archived === 10 && payload.archive.skipped === undefined && archivedIds.length === 10 && lost.length === 0,
+    res.text.substring(0, 500),
+  )
+  // The FIRST write of a raw board also persists the normalised shape, so the FILE
+  // can grow even though 10 cards left: the card count is the measure here (the
+  // byte shrink is pinned on an already-normalised board by the sweep test below).
+  check(
+    'T-242 the legacy sweep keeps keepDone + every active card and takes the 10 cold cards OFF the hot board',
+    hot.tasks.length === beforeTasks - 10 && hot.tasks.filter((task) => task.status === 'done').length === 50 && ['T-1', 'T-2', 'T-3', 'T-4', 'T-5'].every((id) => hotIds.indexOf(id) >= 0) && hot.archivedDone.length === 10,
+    JSON.stringify({ before: beforeTasks, hot: hot.tasks.length, done: hot.tasks.filter((task) => task.status === 'done').length, index: hot.archivedDone.length, bytes: [beforeBytes, h.boardFile().text.length] }),
+  )
+  console.log('PASS  T-242 a never-normalised legacy board sweeps on its first tick (no lost card, no stale deferral)')
+}
+
 // ── the settings save: valid, refused (old value kept), flat spelling ────────
 {
   const h = archiveHarness()

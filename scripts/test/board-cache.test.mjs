@@ -16,6 +16,7 @@ import {
   ARCHIVE_DEFAULTS,
   appendToTaskArchive,
   archivePlanOf,
+  cardContentSignature,
   normaliseArchiveSettings,
   readTaskArchive,
   removeFromTaskArchive,
@@ -609,6 +610,49 @@ const archiveOpts = (extra) => Object.assign({ projectPath: PROJECT, now: NOW_24
     'T-242 the matching stale copy is taken back out and everything else stays',
     removed.ok === true && removed.removed.join(',') === 'T-2' && after.ok === true && after.tasks.map((task) => task.id).join(',') === 'T-1',
     JSON.stringify({ removed: removed.removed, archived: after.ok === true ? after.tasks.map((task) => task.id) : null }),
+  )
+}
+
+// ── the cross-read signature (a re-read is not an edit) ─────────────────────
+// The sweep plans from one board read and removes in a CAS whose mutation re-reads
+// the file. Both sides are normalised, and normaliseTask fills a MISSING createdAt
+// / updatedAt / history.at from the READ clock — so raw (legacy) cards would look
+// "edited" on every read and the sweep would never archive them. The signature
+// ignores exactly those read-clock defaults and nothing an action can edit.
+{
+  const fs = createFakeFs()
+  const raw = JSON.stringify({
+    version: 2,
+    seq: 3,
+    tasks: [
+      { id: 'T-1', title: 'raw done card', status: 'done', kind: 'dev', updatedAt: '2026-09-01T00:00:00.000Z', history: [{ by: 'worker', from: 'running', to: 'done', note: 'done' }] },
+    ],
+  })
+  seedBoard(fs, PROJECT, raw)
+  check('T-242 the raw seed really lacks the normalised bookkeeping (the premise of this check)', raw.indexOf('createdAt') < 0 && raw.indexOf('"at"') < 0)
+  const early = await readBoard({ fs: fs }, { projectPath: PROJECT, now: NOW_242, cache: false })
+  const late = await readBoard({ fs: fs }, { projectPath: PROJECT, now: NOW_242 + 5000, cache: false })
+  check(
+    'T-242 two reads of the SAME raw card at different clocks carry different invented timestamps',
+    JSON.stringify(early.board.tasks[0]) !== JSON.stringify(late.board.tasks[0]) &&
+      early.board.tasks[0].createdAt === new Date(NOW_242).toISOString() &&
+      late.board.tasks[0].createdAt === new Date(NOW_242 + 5000).toISOString(),
+    JSON.stringify({ early: early.board.tasks[0].createdAt, late: late.board.tasks[0].createdAt }),
+  )
+  const signature = cardContentSignature(early.board.tasks[0])
+  check(
+    'T-242 the cross-read signature is STABLE: a normalisation-only difference is not an edit',
+    signature === cardContentSignature(late.board.tasks[0]),
+    JSON.stringify({ early: signature, late: cardContentSignature(late.board.tasks[0]) }),
+  )
+  const edited = Object.assign({}, late.board.tasks[0], { title: 'EDITED' })
+  const reopened = Object.assign({}, late.board.tasks[0], { status: 'pending' })
+  const appended = JSON.parse(JSON.stringify(late.board.tasks[0]))
+  appended.history.push({ at: '2026-11-25T00:00:00.000Z', by: 'user', from: 'done', to: 'pending', note: 'reopen' })
+  check(
+    'T-242 the signature still notices every real edit (title, status, a new history entry)',
+    cardContentSignature(edited) !== signature && cardContentSignature(reopened) !== signature && cardContentSignature(appended) !== signature,
+    JSON.stringify({ edited: cardContentSignature(edited) !== signature, reopened: cardContentSignature(reopened) !== signature, appended: cardContentSignature(appended) !== signature }),
   )
 }
 

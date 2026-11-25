@@ -128,6 +128,42 @@ function clampInt(value, limit, fallback) {
   return Math.min(limit.max, Math.max(limit.min, number))
 }
 
+/**
+ * T-242: the per-card signature the sweep compares across reads.
+ *
+ * The sweep plans from one board read, appends the cards to the archive, then
+ * removes them in one board CAS whose mutation re-reads the file. BOTH sides are
+ * normalised by board.mjs, and normaliseTask FILLS MISSING BOOKKEEPING FROM THE
+ * READ CLOCK: a card whose file row has no createdAt/updatedAt gets `iso(now)`,
+ * and a history row without a valid `at` gets the same. Two reads of the SAME
+ * unmodified file can therefore disagree on those values by a few milliseconds.
+ *
+ * Comparing the raw JSON would read that as "someone edited the card": on a
+ * legacy board (or a board seeded by another writer) whose cards never persisted
+ * those fields, the sweep would keep every card hot on every tick — and because a
+ * deferral writes nothing, nothing would ever normalise the file, so the sweep
+ * would never archive again. This signature ignores exactly those three read-clock
+ * defaults and nothing else: every other field (status, title, spec, evidence,
+ * history rows' body, owner, lease, dispatch, merge/review/test, ...) is compared
+ * byte-for-byte. No action rewrites a card's timestamps WITHOUT changing another
+ * field, so a concurrent reopen or edit is still detected and kept hot.
+ */
+export function cardContentSignature(task) {
+  if (!isRecord(task)) return JSON.stringify(task)
+  const copy = Object.assign({}, task)
+  delete copy.createdAt
+  delete copy.updatedAt
+  if (Array.isArray(copy.history)) {
+    copy.history = copy.history.map((row) => {
+      if (!isRecord(row)) return row
+      const entry = Object.assign({}, row)
+      delete entry.at
+      return entry
+    })
+  }
+  return JSON.stringify(copy)
+}
+
 /** When a done card finished (its last write), as ms; NaN when unreadable. */
 export function doneAtOf(task) {
   if (!isRecord(task)) return Number.NaN

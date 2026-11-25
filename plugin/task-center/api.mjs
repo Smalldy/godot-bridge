@@ -128,6 +128,7 @@ import {
   archivePlanOf,
   archivedIndexRows,
   appendToTaskArchive,
+  cardContentSignature,
   mergeArchivedIndex,
   normaliseArchiveSettings,
   readTaskArchive,
@@ -2970,12 +2971,16 @@ export function createApi(ctx, options) {
     // The plan is a SNAPSHOT, not a lock. A user action (reopen/update/...) or
     // another host can rewrite a planned card between the plan and this write, and
     // that newer truth MUST win: the mutation below removes a candidate only while
-    // the card is still byte-for-byte the one the archive just holds. Everyone
-    // else stays hot and its already-appended copy is taken back out (a hot card
-    // may never also be archived). updateBoard re-runs the mutation on a fresh
-    // board after a lost CAS, so a write landing mid-sweep is never discarded.
+    // the card is still the one the archive just holds. Everyone else stays hot
+    // and its already-appended copy is taken back out (a hot card may never also
+    // be archived). updateBoard re-runs the mutation on a fresh board after a lost
+    // CAS, so a write landing mid-sweep is never discarded.
+    //
+    // The comparison is cardContentSignature, not raw JSON: both sides were
+    // normalised by their OWN read, and normaliseTask fills missing createdAt /
+    // updatedAt / history.at from the read clock (see the function's comment).
     const planned = new Map()
-    for (const task of plan.candidates) planned.set(String(task.id), JSON.stringify(task))
+    for (const task of plan.candidates) planned.set(String(task.id), cardContentSignature(task))
     // Cards an EARLIER row archived (this plugin's archive or the old per-year
     // files) are folded into the index too, so a dependency on any archived card
     // still resolves to "done".
@@ -2994,7 +2999,7 @@ export function createApi(ctx, options) {
             remaining.push(task)
             continue
           }
-          if (JSON.stringify(task) !== signature) {
+          if (cardContentSignature(task) !== signature) {
             // Edited after the plan: keep the user's version, and never index it.
             keptNow.add(id)
             remaining.push(task)
