@@ -234,6 +234,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentStatusIdle: '空闲',
 				agentStatusFailed: '失败',
 				agentStatusUnknown: '状态未知',
+				// T-241: the live tree is ACTIVE-ONLY; a stage the card records but the
+				// tree no longer carries has finished its turn (history), not unknown.
+				agentStatusHistory: '历史',
+				agentHistoryHint: '该阶段 agent 已不在实时树中（实时树只含活跃/当前卡 agent），身份来自任务记录',
 				unknownProjectHint: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在下方手动打开一个项目。',
 				notActivatedTitle: '未激活任何项目',
 				notActivatedStepCall: '在会话里使用 /godot-bridge-task-center-init 技能（任务中心入口）接入项目——宿主会把当前项目记为「上次项目」并激活它。',
@@ -1072,6 +1076,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentStatusIdle: 'idle',
 				agentStatusFailed: 'failed',
 				agentStatusUnknown: 'unknown',
+				// T-241: same rule as the zh copy above.
+				agentStatusHistory: 'history',
+				agentHistoryHint: 'This stage agent is no longer in the live tree (active-only); its identity comes from the card record',
 				unknownProjectHint: 'This session is not bound to a project yet. Call task_center once in the session, or open a project manually below.',
 				notActivatedTitle: 'No project is active',
 				notActivatedStepCall: 'Use the /godot-bridge-task-center-init skill (the task center entry point) in the session: the host records the current project as its last active project and activates it.',
@@ -6474,7 +6481,17 @@ function agentInfoOf(snapshot, sessionId, t, now, helpers, taskId) {
 	}
 	if (name === null) name = sessionShort(sessionId)
 	const reported = treeAgent !== null ? textOf(treeAgent.status) : null
-	const status = reported !== null ? reported : stageStatusOf(task, sessionId)
+	const stageStatus = stageStatusOf(task, sessionId)
+	// T-241: the live tree is ACTIVE-ONLY. A stage session the card's own record
+	// names but the tree no longer carries has FINISHED its turn: it is history,
+	// not a status-less unknown. Its identity still comes from the record, and the
+	// status says which half it is in, so the active-only tree never reads as
+	// missing data.
+	const recorded = matched !== null && matched.role !== 'root'
+	const status = reported !== null ? reported : recorded && stageStatus === 'unknown' ? 'history' : stageStatus
+	// Where this identity came from: the live tree, the card's own delivery
+	// record, or nothing but the tab's session parameter.
+	const stageSource = tree !== null ? 'tree' : matched !== null ? 'record' : 'session'
 	const resolvedId = task !== null && task.id !== undefined && task.id !== null ? String(task.id) : exactId
 	return {
 		sessionId: sessionId,
@@ -6484,7 +6501,8 @@ function agentInfoOf(snapshot, sessionId, t, now, helpers, taskId) {
 		roleLabel: roleLabelOf(role, t),
 		status: status,
 		statusPill: statusPillOf(status),
-		statusLabelKey: tcAgentStatusKey(status),
+		statusLabelKey: status === 'history' ? 'agentStatusHistory' : tcAgentStatusKey(status),
+		stageSource: stageSource,
 		taskId: resolvedId,
 		taskTitle: task !== null && typeof task.title === 'string' ? task.title : '',
 		stage: task !== null ? tcPhaseLabel(task, t) : t('agentTabNoTask'),
@@ -6811,6 +6829,12 @@ function createAgentSidebar(deps) {
 		const stages = card === null ? [] : stageSessionsOf(card)
 		const workspace = workspaceOf()
 		const hasStageSwitch = workspace !== null && stages.some(function (row) { return row.session !== null })
+		// T-241: the host tree this tab reads is ACTIVE-ONLY. Say it on the element,
+		// so a stage agent that is missing from the tree is never read as a bug.
+		const treeBlock = isRecord(view.agentTree) ? view.agentTree : null
+		// A deferred/absent tree says nothing about its scope; only an ANSWERED tree
+		// can be labelled active-only.
+		const activeOnly = treeBlock !== null && treeBlock.available === true && treeBlock.activeOnly === true
 
 		/** One stage row: stage label, agent name, live status, and its own action. */
 		function stageRowOf(row) {
@@ -6831,13 +6855,26 @@ function createAgentSidebar(deps) {
 					'data-agent-stage': row.stage,
 					'data-agent-stage-has-session': hasSession ? 'true' : 'false',
 					'data-agent-stage-session': hasSession ? session : '',
+					// T-241: 'tree' is a live member, 'record' is a card delivery the
+					// active-only tree no longer carries (history), 'none' is no session.
+					'data-agent-stage-source': hasSession ? stageInfo.stageSource : 'none',
 				},
 				h('span', { key: 'stage', className: 'gbt-agenttabstagelabel' }, t(row.labelKey)),
 				hasSession
 					? h('b', { key: 'name', className: 'gbt-agenttabstagename', title: stageInfo.name }, stageInfo.name)
 					: h('span', { key: 'name', className: 'gbt-agenttabstagename gbt-agenttabstagenone', title: t('agentStageNoSessionHint') }, t('agentStageNoSession')),
 				hasSession
-					? h('span', { key: 'status', className: 'gbt-pill', 'data-status': stageInfo.statusPill, 'data-agent-stage-status': stageInfo.status }, t(stageInfo.statusLabelKey))
+					? h(
+						'span',
+						{
+							key: 'status',
+							className: 'gbt-pill',
+							'data-status': stageInfo.statusPill,
+							'data-agent-stage-status': stageInfo.status,
+							title: stageInfo.status === 'history' ? t('agentHistoryHint') : undefined,
+						},
+						t(stageInfo.statusLabelKey),
+					)
 					: h('span', { key: 'status', className: 'gbt-pill', 'data-status': 'inactive', 'data-agent-stage-status': 'none' }, t('agentStageUnavailable')),
 				h(
 					'button',
@@ -6927,6 +6964,8 @@ function createAgentSidebar(deps) {
 				'data-agent-role': info.role === null ? '' : info.role,
 				'data-agent-status': info.status,
 				'data-agent-task': info.taskId === null ? '' : info.taskId,
+				// T-241: the tree behind this tab lists active agents only.
+				'data-agent-active-only': activeOnly ? 'true' : 'false',
 			},
 			children,
 		)

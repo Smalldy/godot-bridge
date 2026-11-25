@@ -186,6 +186,9 @@ const copy = {
   agentStatusIdle: '空闲',
   agentStatusFailed: '失败',
   agentStatusUnknown: '状态未知',
+  // T-241: the agent tab's history status/hint come from the panel dictionary.
+  agentStatusHistory: '历史',
+  agentHistoryHint: '实时树只含活跃 agent，身份来自任务记录',
   agentRootRole: '根代理',
   roleKindWorker: '实现',
   roleKindReviewer: '评审',
@@ -1974,6 +1977,141 @@ guideDispose()
   }
 }
 
+// ── T-241: the tree is ACTIVE-ONLY; history resolves from the card record ───
+// The hot agent tree now lists active agents only, so a DONE card's reviewer/
+// tester is no longer a member. Opening that historical card must STILL show
+// the reviewer/tester (name, role, session) from the card's own deliveredTo,
+// and must say the identity came from the record and that the agent is
+// HISTORY — not paint 'unknown' just because the active-only tree omits it.
+{
+  const historicalTask = Object.assign({}, task, {
+    id: 'T-300',
+    title: 'historical card',
+    status: 'done',
+    state: 'done',
+    phase: null,
+    assignee: { name: 'worker-t-300', session: 'session-w300' },
+    review: Object.assign({}, task.review, { status: 'approved', deliveredTo: { name: 'reviewer-t-300', id: 'session-rev300' } }),
+    test: Object.assign({}, task.test, { status: 'passed', deliveredTo: { name: 'tester-t-300', id: 'session-test300' } }),
+    updatedAt: '2026-11-20T00:00:00.000Z',
+  })
+  const liveTask = Object.assign({}, task, {
+    id: 'T-301',
+    title: 'live card',
+    status: 'running',
+    assignee: { name: 'worker-t-live', session: 'session-live-worker' },
+    review: Object.assign({}, task.review, { deliveredTo: null }),
+    test: Object.assign({}, task.test, { deliveredTo: null }),
+  })
+  // The active-only tree /meta now serves: ONE live stage agent, the 274
+  // historical children only counted.
+  const activeOnlyTree = {
+    available: true,
+    root: { id: 'session-root', name: 'lead', role: 'lead', status: 'running', taskId: null },
+    members: [{ id: 'session-live-worker', name: 'worker-t-live', role: 'worker', status: 'running', taskId: 'T-301' }],
+    count: 1,
+    agentTotal: 275,
+    agentTruncated: true,
+    activeOnly: true,
+    error: null,
+  }
+  const historySnapshot = { tasks: [historicalTask, liveTask], agentTree: activeOnlyTree, activityEvents: null }
+
+  // The resolver: role and name come from the card's delivery records, and the
+  // status says HISTORY because the active-only tree does not carry the agent.
+  const historyReviewer = sidebar.agentInfoOf(historySnapshot, 'session-rev300', t, 1000, helpers, 'T-300')
+  assert.equal(historyReviewer.name, 'reviewer-t-300', 'a historical reviewer is still named by the card record')
+  assert.equal(historyReviewer.role, 'reviewer', 'the record tells the role')
+  assert.equal(historyReviewer.taskId, 'T-300', 'the record tells the card')
+  assert.equal(historyReviewer.status, 'history', 'an agent the active-only tree omits is HISTORY, not unknown')
+  assert.equal(historyReviewer.stageSource, 'record', 'its identity comes from the card record')
+  assert.equal(historyReviewer.statusLabelKey, 'agentStatusHistory', 'the history status has its own label')
+  const liveWorker = sidebar.agentInfoOf(historySnapshot, 'session-live-worker', t, 1000, helpers, 'T-301')
+  assert.equal(liveWorker.status, 'running', 'a live tree member keeps its live status')
+  assert.equal(liveWorker.stageSource, 'tree', 'a live tree member says it came from the tree')
+
+  // The mounted tab: same snapshot, the card the tab was opened from.
+  const historyStore = { subscribe() { return () => {} }, getSnapshot() { return historySnapshot } }
+  const historyView = createView()
+  const historyHost = createHost()
+  const historyDispose = historyView.mount(historyHost.host, { store: historyStore, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+  const historyBody = historyView.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-300', 'session-rev300') })
+  assert.equal(historyBody.props['data-agent-active-only'], 'true', 'the tab says the tree behind it is active-only')
+  assert.equal(historyBody.props['data-agent-status'], 'history', 'the tab body reports the history status')
+  const historyRows = stageRowNodes(historyBody)
+  assert.equal(historyRows.length, 3, 'a historical card still renders its three stage rows')
+  assert.deepEqual(
+    historyRows.map((row) => row.props['data-agent-stage-session']),
+    ['session-w300', 'session-rev300', 'session-test300'],
+    'the historical reviewer/tester still resolve from the detail delivery',
+  )
+  assert.deepEqual(
+    historyRows.map((row) => row.props['data-agent-stage-source']),
+    ['record', 'record', 'record'],
+    'each of the card rows says its identity came from the record, not the tree',
+  )
+  assert.ok(JSON.stringify(historyRows[1]).includes('reviewer-t-300'), 'the review row names the historical reviewer')
+  assert.ok(JSON.stringify(historyRows[2]).includes('tester-t-300'), 'the test row names the historical tester')
+  const historyPill = findNode(historyRows[1], (node) => node.props !== undefined && node.props['data-agent-stage-status'] !== undefined)
+  assert.equal(historyPill.props['data-agent-stage-status'], 'history', 'the review row reports history')
+  assert.ok(JSON.stringify(historyPill).includes(copy.agentStatusHistory), 'the review row says history in words')
+  assert.equal(historyPill.props.title, copy.agentHistoryHint, 'the history pill explains where the identity came from')
+  assert.equal(stageButtonOf(historyBody, 'review').props.disabled, false, 'a historical stage is still openable from the card')
+  const historyTitle = historyView.Title({ sessionId: 'session-rev300', useTabInfo: tabInfoWithAgent('T-300', 'session-rev300') })
+  assert.ok(JSON.stringify(historyTitle).includes('reviewer-t-300'), 'the tab title names the historical reviewer from the record')
+
+  // The live card in the SAME active-only tree: its stage agent is a member, so
+  // the row names the tree as its source and keeps the live status.
+  const liveBody = historyView.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-301', 'session-live-worker') })
+  const liveRows = stageRowNodes(liveBody)
+  assert.equal(liveRows[0].props['data-agent-stage-source'], 'tree', 'a live stage agent is a tree member')
+  assert.equal(liveRows[0].props['data-agent-stage-has-session'], 'true')
+  assert.ok(JSON.stringify(liveRows[0]).includes('worker-t-live'), 'the live row names the tree member')
+  const livePill = findNode(liveRows[0], (node) => node.props !== undefined && node.props['data-agent-stage-status'] !== undefined)
+  assert.equal(livePill.props['data-agent-stage-status'], 'running', 'the live row keeps the running status from the tree')
+  historyDispose()
+
+  // The strongest form of 'history resolves from the DETAIL': the board summary
+  // carries NO deliveredTo and the active-only tree carries no member, so the
+  // reviewer/tester can only come from the card's own /task detail.
+  const boardHistoryCard = Object.assign({}, historicalTask, {
+    review: Object.assign({}, historicalTask.review, { deliveredTo: null }),
+    test: Object.assign({}, historicalTask.test, { deliveredTo: null }),
+  })
+  const detailOnlyStore = {
+    subscribe() { return () => {} },
+    getSnapshot() {
+      return { tasks: [boardHistoryCard], agentTree: activeOnlyTree, activityEvents: null }
+    },
+    getTaskDetail(id) {
+      return String(id) === 'T-300' ? { id: 'T-300', task: historicalTask, status: 'ready', error: null } : null
+    },
+    isTaskGone() { return false },
+    agentsView() {
+      return { agentTree: activeOnlyTree, status: 'ready', error: null, receivedAt: 1 }
+    },
+  }
+  const detailView = createView()
+  const detailHost = createHost()
+  const detailDispose = detailView.mount(detailHost.host, { store: detailOnlyStore, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+  const detailBody = detailView.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-300', 'session-rev300') })
+  const detailRows = stageRowNodes(detailBody)
+  assert.deepEqual(
+    detailRows.map((row) => row.props['data-agent-stage-session']),
+    ['session-w300', 'session-rev300', 'session-test300'],
+    'a history card resolves its stage sessions from the DETAIL alone',
+  )
+  assert.ok(JSON.stringify(detailRows[1]).includes('reviewer-t-300'), 'the detail names the historical reviewer')
+  assert.ok(JSON.stringify(detailRows[2]).includes('tester-t-300'), 'the detail names the historical tester')
+  assert.equal(detailRows[1].props['data-agent-stage-source'], 'record', 'the detail-resolved row says record')
+  const detailPill = findNode(detailRows[1], (node) => node.props !== undefined && node.props['data-agent-stage-status'] !== undefined)
+  assert.equal(detailPill.props['data-agent-stage-status'], 'history', 'the detail-resolved historical row is history')
+  detailDispose()
+  // A host whose tree never advertised the flag (an older answer) reads false:
+  // the marker reports the CONTRACT, it is never assumed.
+  assert.equal(workerBody.props['data-agent-active-only'], 'false', 'a tree without the flag is not claimed as active-only')
+}
+
 // ── 40-tail / shipped bundle carry the same wiring ──────────────────────────
 const TAIL = readFileSync(new URL('../../client/src/40-tail.part', import.meta.url), 'utf8')
 const BUNDLE = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
@@ -2003,6 +2141,10 @@ assert.ok(BUNDLE.includes('getTaskDetail'), 'the shipped bundle carries the per-
 assert.ok(BUNDLE.includes('ensureAgents'), 'the shipped bundle carries the agents-domain request')
 assert.ok(BUNDLE.includes('agentsView'), 'the shipped bundle carries the agents view')
 assert.ok(BUNDLE.includes('isTaskGone'), 'the shipped bundle carries the confirmed-gone card guard')
+// T-241: the active-only contract and the record/history markers ship too.
+assert.ok(BUNDLE.includes('data-agent-active-only'), 'the shipped bundle marks an active-only tree')
+assert.ok(BUNDLE.includes('agentStatusHistory'), 'the shipped bundle carries the history agent status')
+assert.ok(BUNDLE.includes('data-agent-stage-source'), 'the shipped bundle says where a stage identity came from')
 
 // T-227/T-234: the tab owns only its own refresh timer; the panel's poll is not
 // its to start or stop, and the sidebar module never calls either method.
@@ -2016,5 +2158,10 @@ assert.ok(AGENT_SIDEBAR_SOURCE.includes('ensureTaskDetail'), 'the agent tab asks
 assert.ok(AGENT_SIDEBAR_SOURCE.includes('ensureAgents'), 'the agent tab asks the agents domain for the tree')
 assert.ok(AGENT_SIDEBAR_SOURCE.includes('getTaskDetail'), 'the agent tab renders its card from the detail domain')
 assert.ok(AGENT_SIDEBAR_SOURCE.includes('agentsView'), 'the agent tab renders the agents domain')
+// T-241: a tree that only carries ACTIVE agents is still a complete answer: the
+// tab marks the tree's scope and resolves a historical stage from the record.
+assert.ok(AGENT_SIDEBAR_SOURCE.includes('data-agent-active-only'), 'the agent tab exposes the active-only tree scope')
+assert.ok(AGENT_SIDEBAR_SOURCE.includes('data-agent-stage-source'), 'the agent tab says whether a stage identity is live or recorded')
+assert.ok(AGENT_SIDEBAR_SOURCE.includes("status === 'history' ? 'agentStatusHistory'"), 'the agent tab labels a recorded, no-longer-live stage as history')
 
-console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), and reads ONLY its card detail plus the agents domain (a real store serves the open with /task + /meta and no /state, the 5 s tick re-reads the card inside the meta TTL, a deliveredTo reaches the review/test rows, a failed detail keeps the last good card, an action invalidates the detail so the summary renders until the next read, a recorded /meta failure is not retried by the tab, a delete answer or a /task unknown-task forgets the card and stops polling it, a project switch clears it, hidden pauses, unmount clears, and the panel poll is never started or stopped), switches to the host conversation (and says the subagent switch takes the sidebar with it), keeps the last good board through a failed poll in the legacy snapshot path, and degrades safely')
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), and reads ONLY its card detail plus the agents domain (a real store serves the open with /task + /meta and no /state, the 5 s tick re-reads the card inside the meta TTL, a deliveredTo reaches the review/test rows, a failed detail keeps the last good card, an action invalidates the detail so the summary renders until the next read, a recorded /meta failure is not retried by the tab, a delete answer or a /task unknown-task forgets the card and stops polling it, a project switch clears it, hidden pauses, unmount clears, and the panel poll is never started or stopped), switches to the host conversation (and says the subagent switch takes the sidebar with it), keeps the last good board through a failed poll in the legacy snapshot path, and degrades safely; T-241: an ACTIVE-ONLY tree still resolves and labels a historical stage agent from the card record')
