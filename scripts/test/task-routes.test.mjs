@@ -1648,5 +1648,257 @@ function seedManyCards(rig, count) {
   }
 }
 
+// ── T-241: the agent tree is ACTIVE-ONLY, history keeps its entry points ───
+// The DSH agent catalog is append-only: every reviewer/tester a long-lived host
+// ever started stays a row, so a project with ~275 agents made the hot tree (and
+// the header/status page that renders it) grow with the project's age. The /meta
+// agentTree now lists ACTIVE agents only — a RUNNING child, or a session a LIVE
+// card's stage claims — and counts the rest in agentTotal/agentTruncated instead
+// of listing it. History stays reachable: /task detail keeps the card's own
+// review/test deliveredTo, and /meta?scope=history answers an agentHistory
+// summary (the board is the only archive there is; no host archive API is faked).
+{
+  const sessionsDir = mkdtempSync(join(tmpdir(), 'gb-t241-sessions-'))
+  const storageDir = mkdtempSync(join(tmpdir(), 'gb-t241-store-'))
+  const savedSessionsDir = process.env.GODOT_BRIDGE_SESSIONS_DIR
+  const savedStorage = process.env.GODOT_BRIDGE_WORKSPACE_STORAGE
+  try {
+    mkdirSync(join(sessionsDir, '--fixture-project--'))
+    writeFileSync(join(sessionsDir, '--fixture-project--', 'session-' + TEST_SESSION), 'x')
+    process.env.GODOT_BRIDGE_SESSIONS_DIR = sessionsDir
+    const storagePath = join(storageDir, 'workspace.json')
+    writeFileSync(storagePath, JSON.stringify({ unit: { name: 'workspace', version: 2 }, global: { archivedSessionIds: [] }, tables: {} }))
+    process.env.GODOT_BRIDGE_WORKSPACE_STORAGE = storagePath
+
+    // 272 catalog rows of finished reviewer/tester history + the few rows that
+    // matter: a live card's three stage sessions (inactive in the host catalog,
+    // their turn is over, but the card still OWNS those stages), one genuinely
+    // RUNNING child no card claims, and a DONE card's reviewer (pure history).
+    const HISTORY = 272
+    const rows = []
+    for (let index = 0; index < HISTORY; index += 1) {
+      rows.push({ kind: 'child', id: 'session-history-' + String(index), name: 'worker-t-old-' + String(index), activity: 'inactive' })
+    }
+    // A live stage row may have NO usable host name or role: the board's own
+    // delivery record fills both. The worker name deliberately does not match the
+    // worker- prefix, so the role can only come from the claim.
+    rows.push({ kind: 'child', id: 'session-live-worker', name: 'alpha-worker', activity: 'inactive' })
+    rows.push({ kind: 'child', id: 'session-live-reviewer', name: 'reviewer-t-live', activity: 'inactive' })
+    rows.push({ kind: 'child', id: 'session-live-tester', activity: 'inactive' })
+    rows.push({ kind: 'child', id: 'session-running-extra', name: 'worker-t-extra', activity: 'running' })
+    rows.push({ kind: 'child', id: 'session-history-reviewer', name: 'reviewer-t-done', activity: 'inactive' })
+    // The host has not retired the DONE card's tester yet (the catalog still says
+    // running): the BOARD already records it on an ended card, so it is history.
+    rows.push({ kind: 'child', id: 'session-zombie-tester', name: 'tester-t-done', activity: 'running' })
+    const agentTotal = rows.length
+    const liveCard = {
+      id: 'T-901',
+      title: 'live card',
+      kind: 'dev',
+      status: 'reviewing',
+      ownerSession: TEST_SESSION,
+      assignee: { name: 'worker-t-live', session: 'session-live-worker' },
+      review: { status: 'pending', attempt: 1, deliveredTo: { name: 'reviewer-t-live', id: 'session-live-reviewer' } },
+      test: { status: 'pending', attempt: 1, deliveredTo: { name: 'tester-t-live', id: 'session-live-tester' } },
+      createdAt: '2026-11-20T00:00:00.000Z',
+      updatedAt: '2026-11-20T02:00:00.000Z',
+    }
+    const doneCard = {
+      id: 'T-902',
+      title: 'done card',
+      kind: 'dev',
+      status: 'done',
+      ownerSession: TEST_SESSION,
+      assignee: { name: 'worker-t-done', session: 'session-done-worker' },
+      review: { status: 'approved', attempt: 1, deliveredTo: { name: 'reviewer-t-done', id: 'session-history-reviewer' } },
+      test: { status: 'passed', attempt: 1, deliveredTo: { name: 'tester-t-done', id: 'session-zombie-tester' } },
+      createdAt: '2026-11-19T00:00:00.000Z',
+      updatedAt: '2026-11-19T03:00:00.000Z',
+    }
+    // A DONE card that reused a session the live card still owns: the session is
+    // ACTIVE, so it must never be counted as history.
+    const reuseCard = {
+      id: 'T-903',
+      title: 'done card reusing a live session',
+      kind: 'dev',
+      status: 'done',
+      ownerSession: TEST_SESSION,
+      review: { status: 'approved', attempt: 1, deliveredTo: { name: 'reviewer-t-live', id: 'session-live-reviewer' } },
+      createdAt: '2026-11-18T00:00:00.000Z',
+      updatedAt: '2026-11-18T04:00:00.000Z',
+    }
+    const facade = {
+      available: true,
+      rootId: TEST_SESSION,
+      rootFor(rootId) {
+        return rootId === TEST_SESSION ? { id: TEST_SESSION, name: 'lead' } : null
+      },
+      async listFor(rootId) {
+        return rootId === TEST_SESSION ? rows : []
+      },
+    }
+    const rig = createRig({ taskAgents: facade })
+    seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 9, tasks: [liveCard, doneCard, reuseCard] }))
+    const surface = install(rig)
+    const metaCall = async (query) => {
+      const res = response()
+      await surface.byPath.get(META_PATH).handler(request(META_PATH + '?' + query), res)
+      return res.json()
+    }
+    const queryOf = (extra) => 'project=' + encodeURIComponent(PROJECT) + '&session=' + encodeURIComponent(TEST_SESSION) + (extra === undefined ? '' : '&' + extra)
+    const treeOf = (payload) => (payload !== null && payload !== undefined && payload.meta !== null && typeof payload.meta === 'object' ? payload.meta.agentTree : null)
+
+    // 1) The HOT answer: active-only members, the whole catalog counted.
+    const hot = await metaCall(queryOf())
+    const hotTree = treeOf(hot)
+    const hotIds = hotTree === null || Array.isArray(hotTree.members) !== true ? [] : hotTree.members.map((member) => member.id)
+    check('T-241 the hot /meta answers the agent tree', hot.ok === true && hotTree !== null && hotTree.available === true && hotTree.root.id === TEST_SESSION, JSON.stringify(hot.meta === undefined ? null : hot.meta.agentTree).substring(0, 300))
+    check(
+      'T-241 the hot tree is explicitly ACTIVE-ONLY',
+      hotTree !== null && hotTree.activeOnly === true && hotTree.count === hotTree.members.length && hotTree.members.length === 4,
+      JSON.stringify({ activeOnly: hotTree === null ? null : hotTree.activeOnly, members: hotIds }),
+    )
+    check(
+      'T-241 only ACTIVE children and CURRENT card stage agents are members',
+      hotIds.indexOf('session-running-extra') >= 0 &&
+        hotIds.indexOf('session-live-worker') >= 0 &&
+        hotIds.indexOf('session-live-reviewer') >= 0 &&
+        hotIds.indexOf('session-live-tester') >= 0,
+      JSON.stringify(hotIds),
+    )
+    check(
+      'T-241 HISTORICAL agents never enter the hot tree',
+      hotIds.indexOf('session-history-reviewer') < 0 && hotIds.every((id) => id.indexOf('session-history-') < 0) && hotIds.length === 4,
+      JSON.stringify(hotIds),
+    )
+    check(
+      'T-241 a RUNNING child of an ENDED card is history too, not a member',
+      hotIds.indexOf('session-zombie-tester') < 0 && rows.some((entry) => entry.id === 'session-zombie-tester' && entry.activity === 'running'),
+      JSON.stringify(hotIds),
+    )
+    const memberOf = (tree, id) => (tree === null || Array.isArray(tree.members) !== true ? null : tree.members.filter((member) => member.id === id)[0] || null)
+    const liveReviewer = memberOf(hotTree, 'session-live-reviewer')
+    check(
+      'T-241 a current card stage agent keeps its task, role and name',
+      liveReviewer !== null && liveReviewer.taskId === 'T-901' && liveReviewer.role === 'reviewer' && liveReviewer.name === 'reviewer-t-live',
+      JSON.stringify(liveReviewer),
+    )
+    const runningExtra = memberOf(hotTree, 'session-running-extra')
+    check(
+      'T-241 a running child no card claims is still an active member',
+      runningExtra !== null && runningExtra.status === 'running' && runningExtra.taskId === null,
+      JSON.stringify(runningExtra),
+    )
+    const liveWorker = memberOf(hotTree, 'session-live-worker')
+    const liveTester = memberOf(hotTree, 'session-live-tester')
+    check(
+      'T-241 a claimed stage row takes its role from the board it claimed',
+      liveWorker !== null && liveWorker.role === 'worker' && liveWorker.name === 'alpha-worker',
+      JSON.stringify(liveWorker),
+    )
+    check(
+      'T-241 a claimed stage row without a host name gets the recorded delivery name',
+      liveTester !== null && liveTester.name === 'tester-t-live' && liveTester.role === 'tester' && liveTester.taskId === 'T-901',
+      JSON.stringify(liveTester),
+    )
+    check(
+      'T-241 agentTotal counts the WHOLE catalog and the tree is truncated',
+      hotTree !== null && hotTree.agentTotal === agentTotal && hotTree.agentTruncated === true && agentTotal === 278,
+      JSON.stringify({ agentTotal: hotTree === null ? null : hotTree.agentTotal, expected: agentTotal }),
+    )
+
+    // 2) The SAME active-only tree is what /state carries: the header and the
+    // status page read that snapshot, so it cannot drift from /meta.
+    const state = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT))
+    const stateTree = state.json().ok === true ? state.json().agentTree : null
+    const stateIds = stateTree === null || Array.isArray(stateTree.members) !== true ? [] : stateTree.members.map((member) => member.id)
+    check(
+      'T-241 /state carries the SAME active-only tree with the catalog total',
+      state.json().ok === true && stateTree !== null && stateTree.available === true && stateTree.activeOnly === true && stateTree.agentTotal === agentTotal && stateIds.indexOf('session-history-reviewer') < 0 && stateIds.length === 4,
+      JSON.stringify({ ok: state.json().ok, ids: stateIds, agentTotal: stateTree === null ? null : stateTree.agentTotal }),
+    )
+    const light = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&core=1')
+    const lightTree = light.json().agentTree
+    check(
+      'T-241 the deferred tree shape carries the new fields too',
+      lightTree !== null && lightTree.available === false && lightTree.error === 'deferred' && lightTree.agentTotal === 0 && lightTree.agentTruncated === false && lightTree.activeOnly === true,
+      JSON.stringify(lightTree),
+    )
+    check(
+      'T-241 the split advertises agentHistory as a /meta segment',
+      Array.isArray(light.json().metadata.deferred) && light.json().metadata.deferred.indexOf('agentHistory') >= 0,
+      JSON.stringify(light.json().metadata === undefined ? null : light.json().metadata.deferred),
+    )
+
+    // 3) A historical card still resolves its reviewer/tester from its DETAIL.
+    const detail = await call(surface, TASK_PATH + '?id=T-902')
+    const detailTask = detail.json().ok === true ? detail.json().task : null
+    check(
+      'T-241 a historical card keeps its review/test deliveredTo in the detail',
+      detailTask !== null && detailTask.review.deliveredTo.id === 'session-history-reviewer' && detailTask.review.deliveredTo.name === 'reviewer-t-done' && detailTask.test.deliveredTo.id === 'session-zombie-tester' && detailTask.test.deliveredTo.name === 'tester-t-done',
+      JSON.stringify(detailTask === null ? null : { review: detailTask.review.deliveredTo, test: detailTask.test.deliveredTo }),
+    )
+
+    // 4) The history ENTRY POINT: /meta?scope=history summarizes the agents the
+    // hot tree left out, straight from the board's own delivery records.
+    const history = await metaCall(queryOf('scope=history'))
+    const historyBlock = history.ok === true && history.meta !== null && typeof history.meta === 'object' ? history.meta.agentHistory : null
+    const historyEntries = historyBlock === null || Array.isArray(historyBlock.entries) !== true ? [] : historyBlock.entries
+    const historyIds = historyEntries.map((entry) => entry.session)
+    check(
+      'T-241 /meta?scope=history answers the agentHistory summary',
+      history.ok === true && historyBlock !== null && historyBlock.available === true && historyBlock.source === 'board',
+      JSON.stringify(historyBlock).substring(0, 300),
+    )
+    check(
+      'T-241 the history summary names the recorded historical agents',
+      historyIds.length === 3 && historyIds.indexOf('session-history-reviewer') >= 0 && historyIds.indexOf('session-zombie-tester') >= 0 && historyIds.indexOf('session-done-worker') >= 0,
+      JSON.stringify(historyEntries),
+    )
+    check(
+      'T-241 the history entries keep role, stage, task and name',
+      historyEntries.every((entry) => entry.taskId === 'T-902' && entry.taskStatus === 'done') &&
+        historyEntries.some((entry) => entry.session === 'session-history-reviewer' && entry.role === 'reviewer' && entry.stage === 'review' && entry.name === 'reviewer-t-done') &&
+        historyEntries.some((entry) => entry.session === 'session-zombie-tester' && entry.role === 'tester' && entry.stage === 'test' && entry.name === 'tester-t-done'),
+      JSON.stringify(historyEntries),
+    )
+    check(
+      'T-241 a session a live card still owns is not history',
+      historyIds.indexOf('session-live-reviewer') < 0 && historyIds.indexOf('session-live-worker') < 0,
+      JSON.stringify(historyIds),
+    )
+    check(
+      'T-241 the history summary is bounded, counts its active set and is complete here',
+      historyBlock.total === 3 && historyBlock.count === 3 && historyBlock.active === 3 && historyBlock.truncated === false && historyBlock.limit === 200,
+      JSON.stringify({ total: historyBlock === null ? null : historyBlock.total, count: historyBlock === null ? null : historyBlock.count, active: historyBlock === null ? null : historyBlock.active }),
+    )
+    check(
+      'T-241 a history page still DEFERS the hot tree (history never rides it)',
+      history.meta.agentTree.available === false && history.meta.agentTree.error === 'deferred' && Array.isArray(history.metadata.deferred) && history.metadata.deferred.indexOf('agentHistory') < 0,
+      JSON.stringify({ tree: history.meta.agentTree === undefined ? null : history.meta.agentTree.error, deferred: history.metadata === undefined ? null : history.metadata.deferred }),
+    )
+
+    // 5) No agent runtime: the new fields describe 'nothing', never a fabricated
+    // membership, and the same shape reaches the unavailable answer.
+    const noAgentsRig = createRig({})
+    seedBoard(noAgentsRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 1, tasks: [] }))
+    const noTree = await noAgentsRig.api.metadata(PROJECT, { sessionId: TEST_SESSION })
+    const noTreeTree = noTree.ok === true ? noTree.meta.agentTree : null
+    check(
+      'T-241 the unavailable tree keeps the active-only contract fields',
+      noTreeTree !== null && noTreeTree.available === false && noTreeTree.members.length === 0 && noTreeTree.agentTotal === 0 && noTreeTree.agentTruncated === false && noTreeTree.activeOnly === true,
+      JSON.stringify(noTreeTree),
+    )
+    console.log('PASS  T-241 the agent tree is active-only (272 history rows stay out of hot, the live card stage agents stay in, agentTotal/agentTruncated prove it), a historical card still resolves reviewer/tester from its detail, and /meta?scope=history summarizes the rest')
+  } finally {
+    if (savedSessionsDir === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
+    else process.env.GODOT_BRIDGE_SESSIONS_DIR = savedSessionsDir
+    if (savedStorage === undefined) delete process.env.GODOT_BRIDGE_WORKSPACE_STORAGE
+    else process.env.GODOT_BRIDGE_WORKSPACE_STORAGE = savedStorage
+    rmSync(sessionsDir, { recursive: true, force: true })
+    rmSync(storageDir, { recursive: true, force: true })
+  }
+}
+
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
 process.exit(failures === 0 ? 0 : 1)

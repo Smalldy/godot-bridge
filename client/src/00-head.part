@@ -234,6 +234,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentStatusIdle: '空闲',
 				agentStatusFailed: '失败',
 				agentStatusUnknown: '状态未知',
+				// T-241: the live tree is ACTIVE-ONLY; a stage the card records but the
+				// tree no longer carries has finished its turn (history), not unknown.
+				agentStatusHistory: '历史',
+				agentHistoryHint: '该阶段 agent 已不在实时树中（实时树只含活跃/当前卡 agent），身份来自任务记录',
 				unknownProjectHint: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在下方手动打开一个项目。',
 				notActivatedTitle: '未激活任何项目',
 				notActivatedStepCall: '在会话里使用 /godot-bridge-task-center-init 技能（任务中心入口）接入项目——宿主会把当前项目记为「上次项目」并激活它。',
@@ -1072,6 +1076,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentStatusIdle: 'idle',
 				agentStatusFailed: 'failed',
 				agentStatusUnknown: 'unknown',
+				// T-241: same rule as the zh copy above.
+				agentStatusHistory: 'history',
+				agentHistoryHint: 'This stage agent is no longer in the live tree (active-only); its identity comes from the card record',
 				unknownProjectHint: 'This session is not bound to a project yet. Call task_center once in the session, or open a project manually below.',
 				notActivatedTitle: 'No project is active',
 				notActivatedStepCall: 'Use the /godot-bridge-task-center-init skill (the task center entry point) in the session: the host records the current project as its last active project and activates it.',

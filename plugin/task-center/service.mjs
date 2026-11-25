@@ -1410,6 +1410,155 @@ export function renewRunningLeases(board, now, options) {
   return done(next, [], { renewed: renewed })
 }
 
+// ── T-241: the agent identities a board OWNS vs only REMEMBERS ─────────────
+
+/** Statuses whose cards still HOLD a stage agent (the same set the tree uses). */
+const LIVE_STAGE_STATUSES = ['running', 'reviewing', 'testing']
+
+/** How many historical agents one /meta?scope=history summary lists (bounded). */
+export const AGENT_HISTORY_LIMIT = 200
+
+/**
+ * The stage sessions ONE card currently names, in pipeline order: the develop
+ * worker (assignee.session), the review reviewer (review.deliveredTo.id) and the
+ * test tester (test.deliveredTo.id). A missing/blank stage is simply absent —
+ * nothing is minted and no other card's session is borrowed.
+ *
+ * T-241: this is the SAME projection the agent tab uses for its three stage
+ * rows, kept pure so the tree and the history summary cannot drift.
+ *
+ * @returns {Array<{session:string,name:string|null,role:string,stage:string,taskId:string,taskStatus:string,at:string|null}>}
+ */
+export function stageAgentsOfTask(task) {
+  if (task === null || task === undefined || typeof task !== 'object') return []
+  const staged = []
+  const push = function (role, stage, member) {
+    if (member === null || member === undefined || typeof member !== 'object') return
+    const session = typeof member.session === 'string' && member.session !== ''
+      ? member.session
+      : typeof member.id === 'string' && member.id !== ''
+        ? member.id
+        : null
+    if (session === null) return
+    staged.push({
+      session: session,
+      name: typeof member.name === 'string' && member.name !== '' ? member.name : null,
+      role: role,
+      stage: stage,
+      taskId: String(task.id),
+      taskStatus: typeof task.status === 'string' ? task.status : null,
+      at: typeof member.at === 'string' && member.at !== '' ? member.at : null,
+    })
+  }
+  push('worker', 'develop', task.assignee)
+  push('reviewer', 'review', task.review !== null && task.review !== undefined && typeof task.review === 'object' ? task.review.deliveredTo : null)
+  push('tester', 'test', task.test !== null && task.test !== undefined && typeof task.test === 'object' ? task.test.deliveredTo : null)
+  return staged
+}
+
+/**
+ * T-241: the stage agents the board currently OWNS — one entry per Session,
+ * from the cards that are still in a live stage (running/reviewing/testing).
+ *
+ * The agent tree keeps a row whose id is in this map even when the host reports
+ * it inactive: the card handed that stage to it, so it is a CURRENT executor of
+ * the board, not history. The map (not an array) is the dedupe: a session reused
+ * across stages or cards is one agent, named by its first live claim.
+ *
+ * @returns {Map<string, {session:string,name:string|null,role:string,stage:string,taskId:string,taskStatus:string,at:string|null}>}
+ */
+export function liveStageAgentsOf(board) {
+  const live = new Map()
+  const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
+  for (const task of tasks) {
+    if (task === null || task === undefined) continue
+    if (LIVE_STAGE_STATUSES.indexOf(task.status) < 0) continue
+    for (const entry of stageAgentsOfTask(task)) {
+      if (live.has(entry.session) !== true) live.set(entry.session, entry)
+    }
+  }
+  return live
+}
+
+/**
+ * T-241: every Session the board records on a card that no longer holds a live
+ * stage — the HISTORICAL half of the execution tree, as a Set for membership
+ * tests. A session a live card still owns is NOT history (the live claim wins),
+ * so a reused session is never counted twice.
+ *
+ * The board is the authority here: a child the host still reports as running
+ * for a card that has ENDED is that card's history too — the catalog simply has
+ * not retired it yet.
+ *
+ * @returns {Set<string>}
+ */
+export function recordedStageAgentIdsOf(board) {
+  const live = liveStageAgentsOf(board)
+  const ids = new Set()
+  const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
+  for (const task of tasks) {
+    if (task === null || task === undefined) continue
+    if (LIVE_STAGE_STATUSES.indexOf(task.status) >= 0) continue
+    for (const entry of stageAgentsOfTask(task)) {
+      if (live.has(entry.session) !== true) ids.add(entry.session)
+    }
+  }
+  return ids
+}
+
+/**
+ * T-241: the stage agents the board only REMEMBERS — everything the live stage
+ * claims above do NOT cover, taken from the card records themselves:
+ * assignee, review.deliveredTo and test.deliveredTo of cards that are no longer
+ * running/reviewing/testing.
+ *
+ * There is NO host archive API to fake (DSH keeps no archived-agent index): the
+ * board's delivery records ARE the durable identity of a historical agent, which
+ * is exactly what a task detail exposes for one card. This summary is the same
+ * data for the whole project, newest card first, one row per Session, and it
+ * deliberately carries no host-tree read — /meta?scope=history stays light.
+ *
+ * @param board the board to summarize.
+ * @param [options] { limit } how many entries to list (default AGENT_HISTORY_LIMIT).
+ * @returns {{available:boolean,source:string,active:number,total:number,count:number,truncated:boolean,limit:number,entries:Array}}
+ */
+export function recordedStageAgentsOf(board, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const limit = Number.isFinite(opts.limit) ? Math.max(1, Math.floor(opts.limit)) : AGENT_HISTORY_LIMIT
+  const live = liveStageAgentsOf(board)
+  const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks.slice() : []
+  // Newest card first: the history summary answers who worked here recently,
+  // and the board's own updatedAt is the ordering it already trusts.
+  tasks.sort(function (left, right) {
+    const leftAt = left !== null && left !== undefined && typeof left.updatedAt === 'string' ? Date.parse(left.updatedAt) : Number.NaN
+    const rightAt = right !== null && right !== undefined && typeof right.updatedAt === 'string' ? Date.parse(right.updatedAt) : Number.NaN
+    const delta = (Number.isFinite(rightAt) ? rightAt : 0) - (Number.isFinite(leftAt) ? leftAt : 0)
+    if (delta !== 0) return delta
+    return String(left === null || left === undefined ? '' : left.id).localeCompare(String(right === null || right === undefined ? '' : right.id))
+  })
+  const seen = new Set()
+  const entries = []
+  for (const task of tasks) {
+    if (task === null || task === undefined) continue
+    if (LIVE_STAGE_STATUSES.indexOf(task.status) >= 0) continue
+    for (const entry of stageAgentsOfTask(task)) {
+      if (live.has(entry.session) === true || seen.has(entry.session) === true) continue
+      seen.add(entry.session)
+      if (entries.length < limit) entries.push(entry)
+    }
+  }
+  return {
+    available: true,
+    source: 'board',
+    active: live.size,
+    total: seen.size,
+    count: entries.length,
+    truncated: seen.size > entries.length,
+    limit: limit,
+    entries: entries,
+  }
+}
+
 // ── views ──────────────────────────────────────────────────────────────────
 
 /**

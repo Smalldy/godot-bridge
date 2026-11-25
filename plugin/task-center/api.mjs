@@ -712,13 +712,13 @@ export function createApi(ctx, options) {
   }
 
   /** The deferred shapes every answer uses (they are part of the wire contract). */
-  const DEFERRED_AGENT_TREE = { available: false, root: null, members: [], count: 0, error: 'deferred' }
+  const DEFERRED_AGENT_TREE = { available: false, root: null, members: [], count: 0, agentTotal: 0, agentTruncated: false, activeOnly: true, error: 'deferred' }
   const DEFERRED_WORKTREES = { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] }
   const DEFERRED_ARCHIVE = { archivedCount: null, archiveRange: null, archiveYears: [] }
   // T-239: a cursored scope page answers the page and nothing else — every host
   // inventory segment is deferred, exactly like the light first paint.
   const DEFERRED_ACTIVITY = { available: false, error: 'deferred', source: 'board', limit: 0, count: 0, total: 0, truncated: false, cursor: null, entries: [] }
-  const METADATA_FIELDS = ['scope', 'agentTree', 'worktrees', 'environment', 'activityEvents', 'roles', 'rolePreviews', 'decisionPolicy', 'archive', 'nextStep']
+  const METADATA_FIELDS = ['scope', 'agentTree', 'agentHistory', 'worktrees', 'environment', 'activityEvents', 'roles', 'rolePreviews', 'decisionPolicy', 'archive', 'nextStep']
 
   // T-197: the STABLE event keys of the requirement packet (§3.10). The API names
   // them; the scheduler owns their policy, labels and auto actions, and /state
@@ -4258,12 +4258,32 @@ export function createApi(ctx, options) {
   }
 
   /**
-   * The live execution tree for the panel: exact root plus every live child.
-   * This is derived from the runtime on every snapshot; there is no roster file.
+   * The live execution tree for the panel: the exact root plus every ACTIVE
+   * child. This is derived from the runtime on every snapshot; there is no
+   * roster file.
+   *
+   * T-241: this listing is ACTIVE-ONLY. The DSH catalog is append-only (a
+   * disposed reviewer/tester stays a row with activity:'inactive'), so a host
+   * that has dispatched hundreds of cards keeps reporting every child it ever
+   * started. Those rows are HISTORY, not members of the live tree: serving them
+   * made the panel header and the status page grow with the project's age. A row
+   * is a member when EITHER
+   *
+   *   - a LIVE card names it as a stage executor (the develop, review or test
+   *     session of a running/reviewing/testing card), or
+   *   - it is running AND no ENDED card records it as one of its stages. A child
+   *     the host still reports running for a card that has finished is that
+   *     card's history too — the catalog simply has not retired it yet.
+   *
+   * The rest are COUNTED, never listed: `agentTotal` is every child the host
+   * reported and `agentTruncated` says this tree is a subset of it. Nothing is
+   * deleted and no archive is invented: a historical agent stays resolvable from
+   * the card's own review/test deliveredTo records (/task detail) and, in
+   * aggregate, from /meta?scope=history's agentHistory summary.
    */
   async function agentTreeSnapshot(panelSession, board) {
     if (taskAgents === null || taskAgents.available !== true) {
-      return { available: false, root: null, members: [], count: 0, error: 'agent runtime unavailable' }
+      return { available: false, root: null, members: [], count: 0, agentTotal: 0, agentTruncated: false, activeOnly: true, error: 'agent runtime unavailable' }
     }
     let rootAgent = null
     try {
@@ -4281,65 +4301,78 @@ export function createApi(ctx, options) {
           status: 'running',
           taskId: null,
         }
-    const activeTaskByAgent = new Map()
-    const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
-    for (const task of tasks) {
-      if (task === null || task === undefined) continue
-      const active = task.status === 'running' || task.status === 'reviewing' || task.status === 'testing'
-      if (!active) continue
-      const identities = [
-        task.assignee !== null && task.assignee !== undefined ? task.assignee.session : null,
-        task.review !== null && task.review !== undefined && task.review.deliveredTo !== null && task.review.deliveredTo !== undefined ? task.review.deliveredTo.id : null,
-        task.test !== null && task.test !== undefined && task.test.deliveredTo !== null && task.test.deliveredTo !== undefined ? task.test.deliveredTo.id : null,
-      ]
-      for (const identity of identities) {
-        if (typeof identity === 'string' && identity !== '') activeTaskByAgent.set(identity, task.id)
-      }
-    }
+    // T-241: the stage sessions the board OWNS right now, one entry per Session.
+    // A row claimed here is a CURRENT executor even when the host reports it
+    // inactive (the card handed that stage to it), so it stays on the tree.
+    const liveAgents = model.liveStageAgentsOf(board)
+    // The sessions only ENDED cards still record: history, even when the host
+    // still reports the child running (a not-yet-retired catalog row).
+    const historyAgents = model.recordedStageAgentIdsOf(board)
     try {
       // T-210: the SAME cached listing the handoff inventory reads; the panel
       // session's tree is therefore one host call per window, not one per answer.
       const rows = await agentRowsFor(panelSession)
-      const members = (Array.isArray(rows) ? rows : []).map((row) => {
-        const id = row !== null && row !== undefined && row.id !== undefined
+      const members = []
+      // Every child the host reported. A diagnostic row describes an unreadable
+      // subtree, not an agent, so it is neither a member nor counted.
+      let agentTotal = 0
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (row === null || row === undefined) continue
+        if (row.kind === 'diagnostic') continue
+        const id = row.id !== undefined && row.id !== null
           ? String(row.id)
-          : row !== null && row !== undefined && row.sessionId !== undefined
+          : row.sessionId !== undefined && row.sessionId !== null
             ? String(row.sessionId)
             : ''
-        const name = row !== null && row !== undefined && typeof row.name === 'string' && row.name !== ''
+        if (id === '') continue
+        agentTotal += 1
+        const claimed = liveAgents.get(id) || null
+        const name = typeof row.name === 'string' && row.name !== ''
           ? row.name
-          : row !== null && row !== undefined && typeof row.path === 'string' && row.path !== ''
+          : typeof row.path === 'string' && row.path !== ''
             ? row.path.split('/').pop()
-            : id
-        const role = row !== null && row !== undefined && typeof row.role === 'string' && row.role !== ''
+            : claimed !== null && typeof claimed.name === 'string' && claimed.name !== ''
+              ? claimed.name
+              : id
+        const reportedRole = typeof row.role === 'string' && row.role !== ''
           ? row.role
           : /^worker-/.test(name) ? 'worker' : /^reviewer-/.test(name) ? 'reviewer' : /^tester-/.test(name) ? 'tester' : null
-        const status = row !== null && row !== undefined && typeof row.status === 'string' && row.status !== ''
+        const role = reportedRole !== null ? reportedRole : claimed !== null ? claimed.role : null
+        const status = typeof row.status === 'string' && row.status !== ''
           ? row.status
-          : row !== null && row !== undefined && typeof row.activity === 'string' && row.activity !== ''
+          : typeof row.activity === 'string' && row.activity !== ''
             ? row.activity
-            : row !== null && row !== undefined && row.mode === 'continuable' && row.hasChildren === true
+            : row.mode === 'continuable' && row.hasChildren === true
               ? 'running'
               : 'unknown'
-        return {
+        // T-241: ACTIVE-ONLY membership. A history row — inactive, or running
+        // for a card that already ended — is counted in agentTotal above, never
+        // appended.
+        if (claimed === null) {
+          if (status !== 'running') continue
+          if (historyAgents.has(id)) continue
+        }
+        members.push({
           id: id,
           name: name,
           role: role,
           status: status,
-          taskId: row !== null && row !== undefined && typeof row.taskId === 'string' && row.taskId !== ''
-            ? row.taskId
-            : activeTaskByAgent.get(id) || null,
-        }
-      }).filter((row) => row.id !== '')
-        // T-183: an inactive descendant no live card claims is finished-stage
-        // history (the DSH catalog keeps disposed children), not a member of the
-        // live execution tree. Keeping it would let an orphaned child of an ended
-        // card be read as an executor of the card that happens to own the tree.
-        .filter((row) => (row.taskId !== null && row.taskId !== undefined ? true : row.status === 'running'))
+          taskId: typeof row.taskId === 'string' && row.taskId !== '' ? row.taskId : claimed !== null ? claimed.taskId : null,
+        })
+      }
       members.sort((left, right) => (left.status === 'running' ? 0 : 1) - (right.status === 'running' ? 0 : 1))
-      return { available: true, root: root, members: members, count: members.length, error: null }
+      return {
+        available: true,
+        root: root,
+        members: members,
+        count: members.length,
+        agentTotal: agentTotal,
+        agentTruncated: agentTotal > members.length,
+        activeOnly: true,
+        error: null,
+      }
     } catch (error) {
-      return { available: true, root: root, members: [], count: 0, error: String((error && error.message) || error) }
+      return { available: true, root: root, members: [], count: 0, agentTotal: 0, agentTruncated: false, activeOnly: true, error: String((error && error.message) || error) }
     }
   }
 
@@ -4403,6 +4436,9 @@ export function createApi(ctx, options) {
     return {
       scope: scope,
       agentTree: outcomes[1],
+      // T-241: only /meta?scope=history fills this; the hot answer names the
+      // field and answers null, so the two answers keep ONE shape.
+      agentHistory: null,
       worktrees: outcomes[2],
       environment: outcomes[3],
       roles: roleRead === null || roleRead === undefined ? null : roleRead.config,
@@ -4550,6 +4586,13 @@ export function createApi(ctx, options) {
       } catch (error) {
         errors.nextStep = messageOf(error)
       }
+      // T-241: the agent HISTORY entry point. The hot tree is active-only, so
+      // this is where the rest of the catalog is summarized — from the board's
+      // own stage deliveries (there is no host archive API to fake) and NOT
+      // from a host-tree read, so a history page stays as light as T-239 made
+      // it. One card's exact historical reviewer/tester is still /task detail's
+      // review/test deliveredTo.
+      const agentHistory = await guardedSegment(errors, segments, 'agentHistory', null, () => model.recordedStageAgentsOf(board))
       const payload = {
         project: projectPath,
         projectId: projectRef.id,
@@ -4559,6 +4602,7 @@ export function createApi(ctx, options) {
         meta: {
           scope: scope,
           agentTree: DEFERRED_AGENT_TREE,
+          agentHistory: agentHistory,
           worktrees: DEFERRED_WORKTREES,
           environment: null,
           roles: null,
@@ -4570,7 +4614,7 @@ export function createApi(ctx, options) {
           nextStep: nextStep,
         },
         errors: errors,
-        metadata: { split: true, deferred: METADATA_FIELDS.filter((name) => name !== 'scope'), errors: errors },
+        metadata: { split: true, deferred: METADATA_FIELDS.filter((name) => name !== 'scope' && name !== 'agentHistory'), errors: errors },
         serverTime: new Date(now).toISOString(),
       }
       if (timer !== null) payload.timings = timer.finish()
@@ -4628,6 +4672,7 @@ export function createApi(ctx, options) {
       meta: {
         scope: value.scope,
         agentTree: value.agentTree,
+        agentHistory: value.agentHistory === undefined ? null : value.agentHistory,
         worktrees: value.worktrees,
         environment: value.environment,
         roles: value.roles,
