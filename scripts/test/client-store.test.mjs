@@ -1486,6 +1486,90 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
   console.log('PASS  T-236 the activity cadence is ref-counted by the mounted status page')
 }
 
+// ── T-239: an UNPAGED client renders the hot scope and keeps its paging data ──
+// /meta now answers the hot working set (the current session + the newest page)
+// and pages the rest on a cursor. THIS client does not page yet, so its request
+// carries no scope parameters at all: it must keep rendering exactly the sessions
+// it is handed, while the new total/truncated/nextCursor fields ride along
+// untouched for the consumers a later card adds.
+{
+  const routes = new Map()
+  let requests = []
+  globalThis.fetch = async (url) => {
+    requests.push(String(url))
+    const key = String(url).split('?')[0]
+    const handler = routes.get(key)
+    if (handler === undefined) throw new Error('unexpected request: ' + String(url))
+    return { json: async () => (typeof handler === 'function' ? handler(String(url)) : handler) }
+  }
+  const hotSummaries = []
+  for (let index = 0; index < 20; index += 1) {
+    hotSummaries.push({ sessionId: 'session-' + String(index).padStart(2, '0'), status: 'stale', cards: { owned: 1, active: 0 } })
+  }
+  const lightState = {
+    ok: true,
+    full: true,
+    project: '/repo',
+    projectRoot: '/repo',
+    resolvedFrom: 'session',
+    sessionProject: '/repo',
+    counts: { total: 1 },
+    tasks: [{ id: 'T-1', status: 'pending', title: 'card' }],
+    scope: { boardProject: { id: 'repo', root: '/repo' }, panelSession: 'session-test', sessionSummaries: [hotSummaries[0]], currentSessionProject: '/repo', light: true },
+    agentTree: { available: false, root: null, members: [], count: 0, error: 'deferred' },
+    worktrees: { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] },
+    metadata: { split: true, light: true, deferred: ['agentTree', 'worktrees'] },
+  }
+  const hotMeta = {
+    ok: true,
+    project: '/repo',
+    cache: 'miss',
+    meta: {
+      scope: {
+        boardProject: { id: 'repo', root: '/repo' },
+        panelSession: 'session-test',
+        projectSessions: hotSummaries.map((row) => ({ sessionId: row.sessionId, firstSeenAt: null, lastSeenAt: null })),
+        sessionSummaries: hotSummaries,
+        sessions: hotSummaries.map((row) => ({ sessionId: row.sessionId, firstSeenAt: null, lastSeenAt: null })),
+        summaries: hotSummaries,
+        total: 66,
+        limit: 20,
+        mode: 'hot',
+        truncated: true,
+        nextCursor: 'cursor-1',
+        summariesDeferred: false,
+        currentSessionProject: '/repo',
+        light: false,
+        handoff: { required: false, eligibility: { takeover: { ok: false } } },
+      },
+      agentTree: { available: true, root: { id: 'session-test', name: 'lead' }, members: [], count: 0, error: null },
+      worktrees: { available: true, error: null, total: 1, active: 0, counts: { main: 1 }, worktrees: [{ path: '/repo', type: 'main' }] },
+      environment: { clean: true },
+      roles: { version: 1 },
+      decisionPolicy: { version: 1 },
+      activityEvents: null,
+    },
+    errors: {},
+    metadata: { split: true, deferred: [] },
+  }
+  routes.set('/state', lightState)
+  routes.set('/meta', hotMeta)
+  const hotStore = createTaskStore((key) => key, deps)
+  await hotStore.load()
+  await hotStore.loadMeta()
+  const asked = requests.filter((url) => url.indexOf('/meta') === 0)
+  assert.equal(asked.length, 1, 'the unpaged client asks /meta once')
+  assert.equal(asked[0].indexOf('scope=') < 0 && asked[0].indexOf('limit=') < 0 && asked[0].indexOf('cursor=') < 0, true, 'an unpaged client asks for no page: ' + asked[0])
+  const snapshot = hotStore.getSnapshot()
+  assert.equal(snapshot.metadata.status, 'ready', 'the hot metadata lands')
+  assert.equal(snapshot.scope.sessionSummaries.length, 20, 'the panel renders the hot page it was handed')
+  assert.equal(snapshot.scope.total, 66, 'the total of the whole project rides along')
+  assert.equal(snapshot.scope.truncated, true, 'the client can TELL there is more history')
+  assert.equal(snapshot.scope.nextCursor, 'cursor-1', 'the next page cursor rides along unused')
+  assert.equal(snapshot.tasks.length, 1, 'the board is untouched by the paged scope')
+  console.log('PASS  T-239 an unpaged client renders the hot scope and keeps its paging data')
+}
+
 const poll = globalThis.setInterval
 let polls = 0
 globalThis.setInterval = (fn, ms) => {

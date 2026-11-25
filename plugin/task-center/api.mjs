@@ -131,7 +131,7 @@ import {
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
 // T-153: the handoff inventory/decision rules (pure) — one definition shared by
 // onboard, /state and the create/start gates.
-import { applyTakeover, buildHandoff, handoffNextCode, recordHandoffDecision } from './handoff.mjs'
+import { HANDOFF_ACTIVE_STATUSES, applyTakeover, buildHandoff, handoffNextCode, recordHandoffDecision } from './handoff.mjs'
 import { renderTaskLine } from './skill.mjs'
 import {
   ONBOARD_VERSION,
@@ -146,7 +146,7 @@ import {
   selectOnboardNext,
   summariseBoard,
 } from './onboard.mjs'
-import { writePolicyFor } from './state.mjs'
+import { compareSessionRecency, writePolicyFor } from './state.mjs'
 import {
   buildCandidateArtifact,
   parseKeyHunks,
@@ -534,13 +534,36 @@ export function createApi(ctx, options) {
     const raw = Number(process.env.GODOT_BRIDGE_META_TTL_MS)
     return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 10 * 1000
   })()
+  // T-239: the /meta scope is the expensive half of the answer, so it is cached
+  // and single-flighted PER PROJECT (not per project|session): two panels on one
+  // project must pay for ONE hot-set read sequence. The window is short enough
+  // that a new session or a liveness change is never hidden for long.
+  const SCOPE_TTL_MS = (() => {
+    const raw = Number(process.env.GODOT_BRIDGE_SCOPE_TTL_MS)
+    return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : META_CACHE_TTL_MS
+  })()
+  /** The default /meta working set: the current session plus the newest N. */
+  const SCOPE_HOT_LIMIT = 20
+  /** A bigger page is an explicit ask; the cap keeps one such ask bounded. */
+  const SCOPE_HOT_LIMIT_MAX = 200
   const agentRowsCache = new Map()
   const agentRowsFlights = new Map()
   const sessionActiveCache = new Map()
   const metaCache = new Map()
   const metaFlights = new Map()
+  const scopeCache = new Map()
+  const scopeFlights = new Map()
   /** Counters for the timing evidence: a cached read is not a host call. */
-  const hostReads = { agentList: 0, agentListCached: 0, sessionActivity: 0, sessionActivityCached: 0 }
+  const hostReads = {
+    agentList: 0,
+    agentListCached: 0,
+    sessionActivity: 0,
+    sessionActivityCached: 0,
+    scopeBuild: 0,
+    scopeBuildCached: 0,
+    scopeBuildShared: 0,
+    scopeSessions: 0,
+  }
 
   /**
    * The subagent rows of ONE root session. One host call per root per window;
@@ -651,6 +674,13 @@ export function createApi(ctx, options) {
             agentListCached: hostReads.agentListCached - baseline.agentListCached,
             sessionActivity: hostReads.sessionActivity - baseline.sessionActivity,
             sessionActivityCached: hostReads.sessionActivityCached - baseline.sessionActivityCached,
+            // T-239: how the scope was answered — built here (and how many
+            // sessions that build read), reused inside the TTL, or joined to a
+            // build another request had already started.
+            scopeBuild: hostReads.scopeBuild - baseline.scopeBuild,
+            scopeBuildCached: hostReads.scopeBuildCached - baseline.scopeBuildCached,
+            scopeBuildShared: hostReads.scopeBuildShared - baseline.scopeBuildShared,
+            scopeSessions: hostReads.scopeSessions - baseline.scopeSessions,
             // T-232: board decodes this request paid for, and reads answered by the
             // parsed-board memo (or a shared in-flight read) instead.
             boardParse: board.parses - boardBaseline.parses,
@@ -685,6 +715,9 @@ export function createApi(ctx, options) {
   const DEFERRED_AGENT_TREE = { available: false, root: null, members: [], count: 0, error: 'deferred' }
   const DEFERRED_WORKTREES = { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] }
   const DEFERRED_ARCHIVE = { archivedCount: null, archiveRange: null, archiveYears: [] }
+  // T-239: a cursored scope page answers the page and nothing else — every host
+  // inventory segment is deferred, exactly like the light first paint.
+  const DEFERRED_ACTIVITY = { available: false, error: 'deferred', source: 'board', limit: 0, count: 0, total: 0, truncated: false, cursor: null, entries: [] }
   const METADATA_FIELDS = ['scope', 'agentTree', 'worktrees', 'environment', 'activityEvents', 'roles', 'rolePreviews', 'decisionPolicy', 'archive', 'nextStep']
 
   // T-197: the STABLE event keys of the requirement packet (§3.10). The API names
@@ -3195,9 +3228,15 @@ export function createApi(ctx, options) {
    * The listings themselves are shared with the agent tree (agentRowsFor), so
    * the panel session is not read twice in one answer.
    */
-  async function aliveIdsByRoot(board) {
+  async function aliveIdsByRoot(board, options) {
+    const o = options === undefined || options === null ? {} : options
+    // T-239: only a card still IN PROGRESS can appear in the handoff inventory,
+    // so only its owner needs a live tree. Reading a tree per card owner on the
+    // whole board is what made a long history look like a hang.
+    const activeOnly = o.activeOnly === true
     const roots = []
     for (const task of board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []) {
+      if (activeOnly === true && (task === null || task === undefined || HANDOFF_ACTIVE_STATUSES.indexOf(task.status) < 0)) continue
       const rootId = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
       if (rootId === null || roots.indexOf(rootId) >= 0) continue
       roots.push(rootId)
@@ -3317,6 +3356,312 @@ export function createApi(ctx, options) {
       queued: Number.isFinite(read.queued) ? Math.max(0, Math.floor(read.queued)) : null,
       chains: Number.isFinite(read.chains) ? Math.max(0, Math.floor(read.chains)) : null,
       last: read.last === undefined ? null : read.last,
+    }
+  }
+
+  /**
+   * T-239: the paging request a /meta answer was asked for.
+   *
+   *   scope=history (or a cursor with no explicit scope)  a HISTORICAL page
+   *   limit    page size, default 20, clamped to [1, 200]
+   *   cursor   the opaque keyset cursor a previous answer's nextCursor carried
+   *
+   * The hot answer is the default, so an OLD client that sends none of these
+   * keeps the working set it needs (and the truncated flag tells it there is
+   * more).
+   */
+  function scopeRequestOf(options) {
+    const o = options === undefined || options === null ? {} : options
+    const requested = o.scopeMode === 'history' ? 'history' : o.scopeMode === 'hot' ? 'hot' : null
+    // Absent (undefined / null / '') is the DEFAULT page, not zero: the route
+    // forwards the raw query value, so "no limit asked" must not become limit 1.
+    const asked = o.scopeLimit === undefined || o.scopeLimit === null || o.scopeLimit === ''
+    const rawLimit = asked ? NaN : Number(o.scopeLimit)
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(SCOPE_HOT_LIMIT_MAX, Math.floor(rawLimit))) : SCOPE_HOT_LIMIT
+    const cursor = typeof o.scopeCursor === 'string' && o.scopeCursor !== '' ? o.scopeCursor : null
+    return { mode: requested === null ? (cursor === null ? 'hot' : 'history') : requested, limit: limit, cursor: cursor }
+  }
+
+  /**
+   * T-239: the hot ORDER. The session that ASKED is always first (a panel must
+   * never have to hunt for itself), then every other session by recency. The
+   * order is a pure function of the lightweight index, so a cursor cut on it
+   * continues exactly where the previous page stopped.
+   */
+  function orderScopeSessions(sorted, panelSession) {
+    const ordered = Array.isArray(sorted) ? sorted.slice() : []
+    if (panelSession === null || panelSession === undefined) return ordered
+    const at = ordered.findIndex((entry) => entry.sessionId === panelSession)
+    if (at > 0) {
+      const pinned = ordered.splice(at, 1)[0]
+      ordered.unshift(pinned)
+    }
+    return ordered
+  }
+
+  /** An opaque, URL-safe keyset cursor: the SORT KEY of the last row of a page. */
+  function encodeScopeCursor(entry) {
+    if (entry === null || entry === undefined) return null
+    try {
+      return Buffer.from(JSON.stringify({ v: 1, l: entry.lastSeenAt, f: entry.firstSeenAt, s: entry.sessionId }), 'utf8').toString('base64url')
+    } catch (error) {
+      return null
+    }
+  }
+
+  /** An unreadable cursor is treated as "no cursor": paging restarts at page 1. */
+  function decodeScopeCursor(text) {
+    if (typeof text !== 'string' || text === '') return null
+    try {
+      const parsed = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'))
+      if (parsed === null || typeof parsed !== 'object' || typeof parsed.s !== 'string' || parsed.s === '') return null
+      return {
+        sessionId: parsed.s,
+        lastSeenAt: typeof parsed.l === 'string' ? parsed.l : null,
+        firstSeenAt: typeof parsed.f === 'string' ? parsed.f : null,
+      }
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
+   * T-239: the PROJECT-level half of a paged scope — the hot working set.
+   *
+   * A project can carry hundreds of participating sessions, and a session's
+   * evidence (its DSH directory, its workspace lookup) is the serial scan that
+   * made a cold /meta cost 14 s at 66 sessions and grow linearly after that. So
+   * the SHARED build is bounded:
+   *
+   *   - the order comes from the LIGHTWEIGHT index only (the registry's own
+   *     columns — no DSH directory, no conversation log);
+   *   - liveness is read for the hot page AND for the owners of cards still in
+   *     progress (a takeover must never judge a live owner as dead), and for
+   *     nothing else;
+   *   - summaries (one workspace lookup each) are built for the hot page only.
+   *
+   * The per-request overlay (pagedProjectScopeOf) merges the panel session onto
+   * this answer, so two panels on one project pay for ONE read sequence.
+   */
+  async function scopeBaseOf(projectPath, board, limit) {
+    const index =
+      typeof state.projectSessionIndexFor === 'function' ? state.projectSessionIndexFor(projectPath, board) : { source: 'none', sessions: [], total: 0 }
+    const sorted = Array.isArray(index.sessions) ? index.sessions : []
+    const hot = sorted.slice(0, limit)
+    const evidence = hot.slice()
+    for (const task of board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []) {
+      if (task === null || task === undefined || HANDOFF_ACTIVE_STATUSES.indexOf(task.status) < 0) continue
+      const owner = cardOwnerSessionOf(task)
+      if (owner === null || evidence.some((entry) => entry.sessionId === owner)) continue
+      const entry = sorted.filter((row) => row.sessionId === owner)[0]
+      if (entry !== undefined) evidence.push(entry)
+    }
+    const liveness = new Map()
+    for (const entry of evidence) {
+      let value = null
+      try {
+        value = sessionActiveCached(entry.sessionId)
+      } catch (error) {
+        value = null
+      }
+      liveness.set(entry.sessionId, value)
+    }
+    // The handoff ROWS are pure data over that evidence (a row carries the
+    // session's status and card counts, never an executor probe), so building
+    // them here means the overlay only has to filter cards.
+    const rows = buildHandoff({
+      board: board,
+      sessions: evidence,
+      sessionId: null,
+      decisions: {},
+      now: clock(),
+      sessionActiveAtOf: (sessionId) => (liveness.has(sessionId) ? liveness.get(sessionId) : null),
+      executorStatesOf: () => [],
+    }).sessions
+    const summaries = await sessionSummariesOf(projectPath, board, hot, rows, { resolveProject: true })
+    return {
+      at: Date.now(),
+      forLimit: limit,
+      source: index.source === undefined ? 'none' : index.source,
+      total: sorted.length,
+      sorted: sorted,
+      hotIds: hot.map((entry) => entry.sessionId),
+      evidenceRows: rows,
+      liveness: liveness,
+      summaries: summaries,
+      /** How many participating sessions this build actually READ. */
+      processed: evidence.length,
+    }
+  }
+
+  /**
+   * T-239: the project base, cached for a short TTL and SINGLE-FLIGHTED per
+   * project. A smaller page than the cached build is answered from it; a bigger
+   * page is an explicit ask and rebuilds (bounded by the same page cap).
+   */
+  async function scopeBaseFor(projectPath, board, limit, refresh) {
+    const key = projectRefOf(projectPath).id
+    if (refresh === true) scopeCache.delete(key)
+    const cached = scopeCache.get(key)
+    if (cached !== undefined && Date.now() - cached.at < SCOPE_TTL_MS && cached.value.forLimit >= limit) {
+      hostReads.scopeBuildCached += 1
+      return { value: cached.value, cache: 'hit' }
+    }
+    const flight = scopeFlights.get(key)
+    if (flight !== undefined) {
+      const value = await flight
+      if (value.forLimit >= limit) {
+        hostReads.scopeBuildShared += 1
+        return { value: value, cache: 'shared' }
+      }
+      // The in-flight build answered a SMALLER page than this request needs.
+      return await scopeBaseFor(projectPath, board, limit, false)
+    }
+    hostReads.scopeBuild += 1
+    const promise = scopeBaseOf(projectPath, board, limit)
+    scopeFlights.set(key, promise)
+    try {
+      const value = await promise
+      hostReads.scopeSessions += value.processed
+      scopeCache.set(key, { at: Date.now(), value: value })
+      pruneBoundedCache(scopeCache, { ttlMs: SCOPE_TTL_MS, limit: 64 })
+      return { value: value, cache: 'miss' }
+    } finally {
+      if (scopeFlights.get(key) === promise) scopeFlights.delete(key)
+    }
+  }
+
+  /**
+   * T-239: one paged /meta scope answer — the shared project base with THIS
+   * panel's session merged on top.
+   *
+   *   mode 'hot' (default)  the current session first, then the newest `limit`
+   *                         participating sessions, WITH summaries;
+   *   mode 'history'        the next `limit` sessions after `cursor`, read from
+   *                         the lightweight index only (no liveness read, no
+   *                         workspace lookup — the summaries are DEFERRED, which
+   *                         is what keeps paging cheap at any history size).
+   *
+   * The old SESSION fields (projectSessions / sessionSummaries) keep their shapes
+   * and cover exactly the page this answer returns, so a client that predates the
+   * paging parameters renders a coherent (smaller) list instead of breaking.
+   * `handoff` keeps its full inventory: it also carries the owners of cards still
+   * in progress, because a takeover must never judge one without evidence.
+   */
+  async function pagedProjectScopeOf(projectPath, board, panelSession, options) {
+    const o = options === undefined || options === null ? {} : options
+    const request = scopeRequestOf(o)
+    const ref = projectRefOf(projectPath)
+    const built = await scopeBaseFor(projectPath, board, request.limit, o.refresh === true)
+    const base = built.value
+    const ordered = orderScopeSessions(base.sorted, panelSession)
+    // The panel session's evidence is the ONLY per-request host read: when the
+    // shared build already paid for it (it is on the page, or it owns a card in
+    // flight) nothing is read again.
+    const evidenceRows = base.evidenceRows.slice()
+    let liveness = base.liveness
+    let processed = base.processed
+    if (panelSession !== null && liveness.has(panelSession) !== true) {
+      const entry = ordered.filter((row) => row.sessionId === panelSession)[0]
+      if (entry !== undefined) {
+        liveness = new Map(base.liveness)
+        let value = null
+        try {
+          value = sessionActiveCached(panelSession)
+        } catch (error) {
+          value = null
+        }
+        liveness.set(panelSession, value)
+        evidenceRows.push(entry)
+        processed += 1
+      }
+    }
+    // Only cards still in progress can appear in the handoff inventory, so only
+    // their owners are asked for a live executor tree (the pre-T-239 code read a
+    // tree per CARD OWNER on the board, which is why a long history was slow).
+    const aliveByRoot = await aliveIdsByRoot(board, { activeOnly: true })
+    const decisions =
+      board !== null && board !== undefined && board.handoff !== null && board.handoff !== undefined && board.handoff.sessions !== null && typeof board.handoff.sessions === 'object'
+        ? board.handoff.sessions
+        : {}
+    const handoff = buildHandoff({
+      board: board,
+      sessions: evidenceRows,
+      sessionId: panelSession,
+      decisions: decisions,
+      now: clock(),
+      sessionActiveAtOf: (sessionId) => (liveness.has(sessionId) ? liveness.get(sessionId) : null),
+      executorStatesOf: (task) => executorStatesOf(task, aliveByRoot.get(cardOwnerSessionOf(task))),
+    })
+    // The page is a pure slice of the ordering; the cursor is the sort KEY of the
+    // last row (never an offset), so a session dropping out of the project can
+    // never shift a page into repeating a row the caller already saw.
+    const cursor = decodeScopeCursor(request.cursor)
+    let rest = ordered
+    if (request.mode === 'history' && cursor !== null) {
+      const at = ordered.findIndex((entry) => entry.sessionId === cursor.sessionId)
+      rest =
+        at >= 0
+          ? ordered.slice(at + 1)
+          : // The cursor names a session that is no longer a participant: continue
+            // by recency. The pinned current session is skipped — the caller that
+            // pages always received it on its first page.
+            ordered.filter((entry) => entry.sessionId !== panelSession && compareSessionRecency(entry, cursor) > 0)
+    }
+    const page = rest.slice(0, request.limit)
+    const nextCursor = rest.length > page.length ? encodeScopeCursor(page[page.length - 1]) : null
+    // Summaries: the shared build owns the hot page. The one row this request may
+    // still need is the panel session pinned in from OUTSIDE it.
+    const summaryById = new Map()
+    if (request.mode === 'hot') {
+      for (const row of base.summaries) summaryById.set(row.sessionId, row)
+      const missing = page.filter((entry) => summaryById.has(entry.sessionId) !== true)
+      if (missing.length > 0) {
+        const builtRows = await sessionSummariesOf(projectPath, board, missing, handoff.sessions, { resolveProject: true })
+        for (const row of builtRows) summaryById.set(row.sessionId, row)
+      }
+    }
+    const sessions = page.map((entry) => ({ sessionId: entry.sessionId, firstSeenAt: entry.firstSeenAt, lastSeenAt: entry.lastSeenAt }))
+    const summaries = request.mode === 'hot' ? page.map((entry) => summaryById.get(entry.sessionId)).filter((row) => row !== undefined) : []
+    const panelSessionParticipates = panelSession === null || panelSession === undefined ? null : base.sorted.some((entry) => entry.sessionId === panelSession)
+    let currentSessionProject = null
+    if (panelSession !== null && panelSession !== undefined) {
+      try {
+        const workspace = await sessionWorkspaceOf(state, panelSession)
+        currentSessionProject = typeof workspace === 'string' && workspace !== '' ? workspace : null
+      } catch (error) {
+        currentSessionProject = null
+      }
+    }
+    return {
+      boardProject: { id: ref.id, root: ref.root },
+      panelSession: panelSession === undefined ? null : panelSession,
+      // The old fields: the SAME page, so a client that predates the paging
+      // parameters still renders a coherent (smaller) session list.
+      projectSessions: sessions,
+      projectSessionsSource: base.source,
+      panelSessionParticipates: panelSessionParticipates,
+      // T-210: liveness came from the host (DSH directory) for the page.
+      livenessSource: 'host',
+      light: false,
+      sessionSummaries: summaries,
+      currentSessionProject: currentSessionProject,
+      handoff: handoff,
+      // T-239: the page, its position, and the size of the project's recorded
+      // participation set (never the size of this page).
+      sessions: sessions,
+      summaries: summaries,
+      total: base.total,
+      limit: request.limit,
+      mode: request.mode,
+      cursor: request.cursor,
+      truncated: nextCursor !== null,
+      nextCursor: nextCursor,
+      summariesDeferred: request.mode !== 'hot',
+      // How many participating sessions THIS answer actually read.
+      processed: processed,
+      // 'miss' (built by this request) | 'hit' (inside the TTL) | 'shared'.
+      cache: built.cache,
     }
   }
 
@@ -3926,9 +4271,16 @@ export function createApi(ctx, options) {
     const segments = o.segments === undefined ? null : o.segments
     const errors = o.errors === undefined || o.errors === null ? {} : o.errors
     const resolveSessionProjects = o.resolveSessionProjects !== false
+    // T-239: the /meta answer reads the PAGED (hot working set) scope; every
+    // other caller of this builder (/state's full snapshot) keeps the complete
+    // one, because the tool and the panel's full answer still describe the whole
+    // project.
+    const pagedScope = o.pagedScope === true
     const outcomes = await Promise.all([
       guardedSegment(errors, segments, 'scope', null, () =>
-        projectScopeOf(projectPath, board, panelSession, { resolveSessionProjects: resolveSessionProjects }),
+        pagedScope === true
+          ? pagedProjectScopeOf(projectPath, board, panelSession, { scopeLimit: o.scopeLimit, refresh: o.refresh === true })
+          : projectScopeOf(projectPath, board, panelSession, { resolveSessionProjects: resolveSessionProjects }),
       ),
       guardedSegment(errors, segments, 'agentTree', DEFERRED_AGENT_TREE, () => agentTreeSnapshot(panelSession, board)),
       guardedSegment(errors, segments, 'worktreeSnapshot', DEFERRED_WORKTREES, () => worktreeSnapshot(projectPath, board)),
@@ -4028,6 +4380,12 @@ export function createApi(ctx, options) {
    *     a serial host read is visible instead of guessed at;
    *   - a failing segment degrades only itself (`errors`), never the board.
    * The activity timeline stays request-scoped because it carries a cursor.
+   *
+   * T-239: the SCOPE inside it is PAGED. The default answer carries the hot
+   * working set (the asking session + the newest `limit` sessions) and a
+   * nextCursor for the rest; `scope=history`/a cursor reads a lightweight page
+   * instead of rebuilding anything. The scope itself is cached per PROJECT (see
+   * scopeBaseFor), so two sessions on one project share one build.
    */
   async function metadata(projectPath, options) {
     const opts = options === undefined || options === null ? {} : options
@@ -4035,24 +4393,34 @@ export function createApi(ctx, options) {
     const panelSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
     const timer = opts.timings === true ? createTiming() : null
     const segments = timer === null ? null : timer.segments
+    // T-239: what page the caller asked for. History mode is a READ of the
+    // lightweight session index, so it is neither served from nor written to the
+    // shared metadata cache (a cached answer always describes the page it was
+    // built for).
+    const scopeRequest = scopeRequestOf(opts)
+    const historyMode = scopeRequest.mode === 'history'
     // T-232: the TTL check runs BEFORE the board is read. It used to run after, so
     // a warm /meta decoded the whole 5 MB board only to discover the answer was
     // already known. The board is still read below (the activity timeline carries
     // this request's cursor and cannot be served from the build), but on a warm
     // answer that read is a stat-validated cache hit — a lookup, not a decode.
     const projectRef = projectRefOf(projectPath)
-    const key = projectRef.id + '|' + (panelSession === null ? '' : panelSession)
+    // T-239: the page size is part of the key — the cached answer carries the
+    // page it was built for, so a different limit is a different answer.
+    const key = projectRef.id + '|' + (panelSession === null ? '' : panelSession) + '|' + String(scopeRequest.limit)
     const fresh = opts.refresh === true
-    let cache = 'miss'
+    let cache = historyMode === true ? 'bypass' : 'miss'
     let value = null
-    // T-210 review: an explicit refresh INVALIDATES the entry first, so a later
-    // poll cannot be served the pre-action build even if this request joins an
-    // in-flight build.
-    if (fresh === true) metaCache.delete(key)
-    const cached = metaCache.get(key)
-    if (fresh !== true && cached !== undefined && Date.now() - cached.at < META_CACHE_TTL_MS) {
-      value = cached.value
-      cache = 'hit'
+    if (historyMode !== true) {
+      // T-210 review: an explicit refresh INVALIDATES the entry first, so a later
+      // poll cannot be served the pre-action build even if this request joins an
+      // in-flight build.
+      if (fresh === true) metaCache.delete(key)
+      const cached = metaCache.get(key)
+      if (fresh !== true && cached !== undefined && Date.now() - cached.at < META_CACHE_TTL_MS) {
+        value = cached.value
+        cache = 'hit'
+      }
     }
     const readStarted = Date.now()
     const read = await readBoardOrFail(projectPath)
@@ -4060,6 +4428,47 @@ export function createApi(ctx, options) {
     const board = read.board
     const now = clock()
     if (segments !== null) segments.board = Date.now() - readStarted
+    // T-239: a HISTORY page answers the page (and the session next step) only.
+    // Every host inventory segment is DEFERRED — rebuilding the agent tree,
+    // worktrees, environment, roles and archive for a paging request would defeat
+    // the lightweight index the cursor reads.
+    if (historyMode === true) {
+      const errors = {}
+      const scope = await guardedSegment(errors, segments, 'scope', null, () =>
+        pagedProjectScopeOf(projectPath, board, panelSession, { scopeMode: 'history', scopeLimit: scopeRequest.limit, scopeCursor: scopeRequest.cursor }),
+      )
+      let nextStep = null
+      try {
+        nextStep = scope === null ? null : nextStepForScope(scope)
+      } catch (error) {
+        errors.nextStep = messageOf(error)
+      }
+      const payload = {
+        project: projectPath,
+        projectId: projectRef.id,
+        projectRoot: projectRef.root,
+        resolvedFrom: opts.resolvedFrom === undefined ? 'explicit' : opts.resolvedFrom,
+        cache: 'bypass',
+        meta: {
+          scope: scope,
+          agentTree: DEFERRED_AGENT_TREE,
+          worktrees: DEFERRED_WORKTREES,
+          environment: null,
+          roles: null,
+          rolePreviews: null,
+          archivedCount: null,
+          archiveRange: null,
+          decisionPolicy: null,
+          activityEvents: DEFERRED_ACTIVITY,
+          nextStep: nextStep,
+        },
+        errors: errors,
+        metadata: { split: true, deferred: METADATA_FIELDS.filter((name) => name !== 'scope'), errors: errors },
+        serverTime: new Date(now).toISOString(),
+      }
+      if (timer !== null) payload.timings = timer.finish()
+      return ok(payload)
+    }
     if (value === null) {
       const flight = metaFlights.get(key)
       if (flight !== undefined) {
@@ -4073,6 +4482,10 @@ export function createApi(ctx, options) {
           resolveSessionProjects: opts.resolveSessionProjects !== false,
           segments: segments,
           errors: {},
+          // T-239: the /meta scope answers the hot working set, paged.
+          pagedScope: true,
+          scopeLimit: scopeRequest.limit,
+          refresh: fresh,
         })
         metaFlights.set(key, promise)
         try {

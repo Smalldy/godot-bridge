@@ -263,11 +263,21 @@ export function registerTaskRoutes(ctx, options) {
       const url = queryOf(req)
       const get = (name) => (url === null ? null : url.searchParams.get(name))
       const activitySinceRaw = get('activitySince')
+      // T-239: the scope is PAGED. `limit` is the working-set size (default 20),
+      // `scope=history` (or a bare `cursor`) asks for the lightweight next page.
+      // A client that sends none of these keeps the hot working set and sees
+      // `truncated`, so an older panel never breaks.
+      const limitRaw = get('limit')
+      const cursorRaw = get('cursor')
+      const scopeRaw = get('scope')
       const payload = await api.metadata(project, {
         sessionId: sessionId,
         resolvedFrom: target.resolvedFrom,
         // The activity timeline is incremental on its OWN cursor (T-111).
         activitySince: activitySinceRaw === null || activitySinceRaw === '' ? null : String(activitySinceRaw),
+        scopeMode: scopeRaw === 'history' ? 'history' : scopeRaw === 'hot' ? 'hot' : null,
+        scopeLimit: limitRaw === null || limitRaw === '' ? null : Number(limitRaw),
+        scopeCursor: cursorRaw === null || cursorRaw === '' ? null : cursorRaw,
         timings: get('timings') === '1',
         refresh: get('refresh') === '1',
       })

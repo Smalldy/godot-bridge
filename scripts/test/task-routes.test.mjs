@@ -2,11 +2,14 @@
 // that /state carries NO legacy Team snapshot. The retired fields (workers /
 // teams / agents / team) must not come back; the panel reads agentTree + scope.
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, ACTIVITY_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
 import { pruneBoundedCache } from '../../plugin/task-center/api.mjs'
 import { boardCacheStats, boardPath } from '../../plugin/task-center/board.mjs'
 import { TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
-import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
+import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -693,8 +696,16 @@ const lightSurface = install(lightRig)
     check('T-210 the openProject answer keeps preflight and the registry', openedPayload.preflight !== null && typeof openedPayload.preflight === 'object' && typeof openedPayload.preflight.ok === 'boolean' && openedPayload.registry !== undefined, JSON.stringify(openedPayload.preflight).substring(0, 200))
     check('T-210 opening a project reads NO host inventory', listForCalls === 0, String(listForCalls))
     check('T-210 the openProject answer still carries the board and the header base', Array.isArray(openedPayload.tasks) && openedPayload.scope !== null && openedPayload.metadata.split === true, JSON.stringify(openedPayload.metadata))
+    // T-239: the executor tree is read only for owners of cards still IN PROGRESS
+    // (this board's only card is pending, so there is nothing to judge for a
+    // takeover). The host-read proof is the SCOPE's own session evidence: the
+    // answer read the hot working set it was asked for.
     const afterOpen = (await call(lightSurface, META_PATH + '?refresh=1', {})).json()
-    check('T-210 the deferred half is ONE /meta request away after opening', afterOpen.ok === true && afterOpen.meta.agentTree !== undefined && afterOpen.meta.scope !== null && listForCalls >= 1, JSON.stringify({ ok: afterOpen.ok, calls: listForCalls }))
+    check(
+      'T-210 the deferred half is ONE /meta request away after opening',
+      afterOpen.ok === true && afterOpen.meta.agentTree.available === true && afterOpen.meta.agentTree.root.id === TEST_SESSION && afterOpen.meta.scope !== null && afterOpen.meta.scope.processed >= 1,
+      JSON.stringify({ ok: afterOpen.ok, tree: afterOpen.meta.agentTree === undefined ? null : afterOpen.meta.agentTree.available, scope: afterOpen.meta.scope === null || afterOpen.meta.scope === undefined ? null : afterOpen.meta.scope.processed }),
+    )
     console.log('PASS  T-210 opening a project paints the light board; /meta supplies the inventory')
   }
 
@@ -1090,6 +1101,324 @@ function seedManyCards(rig, count) {
     JSON.stringify({ writes: boardWrites - casWrites, ids: merged.tasks.map((task) => task.id), mine: mergedMine === undefined ? null : mergedMine.leaseUntil, other: mergedOther === undefined ? null : mergedOther.leaseUntil }),
   )
   console.log('PASS  T-238 a fresh lease writes nothing; a due lease writes once and concurrent calls share it')
+}
+
+// ── T-239: /meta answers a HOT scope, pages the rest, and builds it ONCE ────
+// A project with 66 participating sessions used to make a cold /meta read EVERY
+// session's evidence (its DSH directory and its workspace): 14.1 s at 66, linear
+// growth after that, and parallelising it only hid the trend. The default answer
+// is now the hot working set (the asking session + the newest `limit`), the rest
+// is paged on a keyset cursor, and the scope build is cached and single-flighted
+// per PROJECT with a short TTL — two panels on one project share ONE read.
+{
+  // The liveness read must never walk the developer's real ~/.dsh/sessions: a
+  // fixture path makes the count deterministic (and fast) on any host.
+  const savedSessionsDir = process.env.GODOT_BRIDGE_SESSIONS_DIR
+  process.env.GODOT_BRIDGE_SESSIONS_DIR = join(PROJECT, 'fixture-sessions')
+  try {
+    const NUMBERED = 65
+    const sessionIds = []
+    for (let index = 0; index < NUMBERED; index += 1) sessionIds.push('session-' + String(index).padStart(2, '0'))
+    // The asking session sorts LAST on the lightweight index when nothing has
+    // stamped it (no lastSeenAt), so "it leads the page" cannot be recency.
+    sessionIds.push('session-lead')
+    const total = sessionIds.length
+    const longBoard = () => {
+      const tasks = sessionIds.map((sessionId, index) => ({
+        id: 'T-' + String(index + 1),
+        title: 'card of ' + sessionId,
+        kind: 'dev',
+        status: 'done',
+        ownerSession: sessionId,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }))
+      return JSON.stringify({ version: 2, seq: 5, tasks: tasks })
+    }
+    // One card still IN PROGRESS, owned by a session that is NOT on the hot page.
+    const inFlight = (tasks) => {
+      tasks.push({
+        id: 'T-99',
+        title: 'in flight',
+        kind: 'dev',
+        status: 'running',
+        ownerSession: 'session-70',
+        assignee: { name: 'worker-70', session: 'session-70' },
+        leaseUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+      return tasks
+    }
+    const metaCall = async (surface, query) => {
+      const res = response()
+      await surface.byPath.get(META_PATH).handler(request(META_PATH + '?' + query), res)
+      return res.json()
+    }
+    const queryOf = (sessionId, extra) =>
+      'project=' + encodeURIComponent(PROJECT) + '&session=' + encodeURIComponent(sessionId) + (extra === undefined ? '' : '&' + extra)
+
+    // 1) The default answer: hot 20 of 66, total 66, truncated, current first.
+    {
+      const rig = createRig({ taskAgents: createFakeTaskAgents() })
+      seedBoard(rig.fs, PROJECT, longBoard())
+      const surface = install(rig)
+      const hot = await metaCall(surface, queryOf(TEST_SESSION, 'timings=1'))
+      const hotScope = hot.ok === true && hot.meta !== null && typeof hot.meta === 'object' ? hot.meta.scope : null
+      check('T-239 the default /meta answers', hot.ok === true && hotScope !== null, JSON.stringify({ ok: hot.ok }).substring(0, 300))
+      check('T-239 the default scope carries the WHOLE project total', hotScope !== null && hotScope.total === total, JSON.stringify({ total: hotScope === null ? null : hotScope.total }))
+      check(
+        'T-239 the default scope is the hot working set only',
+        hotScope !== null && hotScope.sessions.length === 20 && hotScope.summaries.length === 20 && hotScope.limit === 20 && hotScope.mode === 'hot',
+        JSON.stringify({ sessions: hotScope === null ? null : hotScope.sessions.length, limit: hotScope === null ? null : hotScope.limit }),
+      )
+      check('T-239 the hot answer is TRUNCATED and carries a cursor', hotScope !== null && hotScope.truncated === true && typeof hotScope.nextCursor === 'string' && hotScope.nextCursor !== '', JSON.stringify({ truncated: hotScope === null ? null : hotScope.truncated }))
+      check('T-239 the asking session leads the hot page', hotScope !== null && hotScope.sessions[0].sessionId === TEST_SESSION && hotScope.summaries[0].sessionId === TEST_SESSION, JSON.stringify(hotScope === null ? null : hotScope.sessions.slice(0, 2)))
+      check(
+        'T-239 the cold scope PROCESSED only the hot page',
+        hotScope !== null && hotScope.processed === 20 && hot.timings.counts.scopeBuild === 1 && hot.timings.counts.scopeSessions === 20,
+        JSON.stringify({ processed: hotScope === null ? null : hotScope.processed, counts: hot.timings === undefined ? null : hot.timings.counts }),
+      )
+      check(
+        'T-239 the cold scope read ONE liveness sample per hot session',
+        hot.timings.counts.sessionActivity === 20 && hot.timings.counts.sessionActivityCached === 0,
+        JSON.stringify(hot.timings.counts),
+      )
+      check(
+        'T-239 the old scope fields describe the SAME page',
+        hotScope !== null &&
+          Array.isArray(hotScope.projectSessions) &&
+          hotScope.projectSessions.length === 20 &&
+          hotScope.projectSessions[0].sessionId === TEST_SESSION &&
+          Array.isArray(hotScope.sessionSummaries) &&
+          hotScope.sessionSummaries.length === 20,
+        JSON.stringify({ sessions: hotScope === null ? null : hotScope.projectSessions === undefined ? null : hotScope.projectSessions.length }),
+      )
+      check(
+        'T-239 the old metadata blocks still answer',
+        hot.meta.agentTree !== undefined && hot.meta.worktrees !== undefined && hot.meta.environment !== undefined && hot.meta.decisionPolicy !== null && hot.meta.scope.handoff !== null,
+        JSON.stringify(Object.keys(hot.meta === null ? {} : hot.meta)),
+      )
+
+      // 2) The cursor walks the remaining 46 exactly once, light on every page.
+      const seen = hotScope.sessions.map((row) => row.sessionId)
+      const pages = [hotScope]
+      let cursor = hotScope.nextCursor
+      let historyHostReads = 0
+      while (cursor !== null && pages.length < 6) {
+        const page = await metaCall(surface, queryOf(TEST_SESSION, 'scope=history&limit=20&cursor=' + encodeURIComponent(cursor) + '&timings=1'))
+        const pageScope = page.ok === true && page.meta !== null && typeof page.meta === 'object' ? page.meta.scope : null
+        if (pageScope === null) {
+          check('T-239 a history page answers', false, JSON.stringify(page).substring(0, 200))
+          break
+        }
+        pages.push(pageScope)
+        historyHostReads += page.timings.counts.sessionActivity + page.timings.counts.agentList
+        seen.push.apply(seen, pageScope.sessions.map((row) => row.sessionId))
+        cursor = pageScope.nextCursor
+      }
+      check(
+        'T-239 the cursor pages the whole project EXACTLY once',
+        pages.length === 4 && seen.length === total && new Set(seen).size === total,
+        JSON.stringify({ pages: pages.length, seen: seen.length, unique: new Set(seen).size }),
+      )
+      check('T-239 every page reports the project total', pages.every((page) => page.total === total), JSON.stringify(pages.map((page) => page.total)))
+      check(
+        'T-239 the last page ends the history',
+        pages[pages.length - 1].nextCursor === null && pages[pages.length - 1].truncated === false && pages[pages.length - 1].sessions.length === total - 60,
+        JSON.stringify({ last: pages[pages.length - 1].sessions.length, next: pages[pages.length - 1].nextCursor }),
+      )
+      check(
+        'T-239 a history page is LIGHTWEIGHT: index rows only, summaries deferred',
+        pages[1].summaries.length === 0 && pages[1].summariesDeferred === true && pages[1].mode === 'history' && pages[1].cache === 'hit' && historyHostReads === 0,
+        JSON.stringify({ summaries: pages[1].summaries.length, cache: pages[1].cache, reads: historyHostReads }),
+      )
+
+      // 2b) `limit` is honoured as a page size (default 20), and the cursor still
+      // covers the whole history.
+      const small = await metaCall(surface, queryOf(TEST_SESSION, 'limit=5'))
+      check(
+        'T-239 limit sets the page size',
+        small.ok === true && small.meta.scope.limit === 5 && small.meta.scope.sessions.length === 5 && small.meta.scope.truncated === true && small.meta.scope.sessions[0].sessionId === TEST_SESSION,
+        JSON.stringify({ limit: small.meta.scope === null ? null : small.meta.scope.limit, sessions: small.meta.scope === null ? null : small.meta.scope.sessions.length }),
+      )
+      const smallNext = await metaCall(surface, queryOf(TEST_SESSION, 'scope=history&limit=5&cursor=' + encodeURIComponent(small.meta.scope.nextCursor)))
+      check(
+        'T-239 the smaller page continues without repeating a row',
+        smallNext.ok === true &&
+          smallNext.meta.scope.sessions.length === 5 &&
+          smallNext.meta.scope.sessions.every((row) => small.meta.scope.sessions.every((seen) => seen.sessionId !== row.sessionId)),
+        JSON.stringify(smallNext.meta.scope === null ? null : smallNext.meta.scope.sessions.map((row) => row.sessionId)),
+      )
+
+      // 3) A second panel session on the SAME project pays nothing.
+      const second = await metaCall(surface, queryOf('session-04', 'timings=1'))
+      check(
+        'T-239 a second session on the same project reuses ONE scope build',
+        second.ok === true &&
+          second.meta.scope.cache === 'hit' &&
+          second.meta.scope.processed === 20 &&
+          second.timings.counts.scopeBuild === 0 &&
+          second.timings.counts.scopeBuildCached === 1 &&
+          second.timings.counts.sessionActivity === 0 &&
+          second.timings.counts.sessionActivityCached === 0,
+        JSON.stringify({ cache: second.meta.scope === null ? null : second.meta.scope.cache, counts: second.timings === undefined ? null : second.timings.counts }),
+      )
+      check('T-239 the second session leads ITS answer', second.meta.scope.sessions[0].sessionId === 'session-04', JSON.stringify(second.meta.scope.sessions.slice(0, 2)))
+      console.log('PASS  T-239 /meta answers hot 20 of 66, pages the rest on a cursor, and shares the build')
+    }
+
+    // 4) The pin, on the API: nothing has stamped session-lead, so it sorts LAST
+    // on the lightweight index — and must still lead the page. The overlay is the
+    // ONE row the shared build did not read.
+    {
+      const pinRig = createRig({ taskAgents: createFakeTaskAgents() })
+      seedBoard(pinRig.fs, PROJECT, longBoard())
+      const pinned = await pinRig.api.metadata(PROJECT, { sessionId: TEST_SESSION, timings: true })
+      const pinScope = pinned.meta.scope
+      check(
+        'T-239 the current session leads the page even when it is the OLDEST participant',
+        pinned.ok === true && pinScope.sessions[0].sessionId === TEST_SESSION && pinScope.summaries[0].sessionId === TEST_SESSION,
+        JSON.stringify({ first: pinScope.sessions.slice(0, 2).map((row) => row.sessionId) }),
+      )
+      check(
+        'T-239 the page stays at the limit; the pinned row displaces the tail',
+        pinScope.sessions.length === 20 && pinScope.sessions[1].sessionId === 'session-00' && pinScope.sessions.every((row) => row.sessionId !== 'session-19'),
+        JSON.stringify(pinScope.sessions.map((row) => row.sessionId)),
+      )
+      check(
+        'T-239 the overlay reads ONLY the current session outside the shared page',
+        pinScope.processed === 21 && pinned.timings.counts.scopeSessions === 20 && pinned.timings.counts.sessionActivity === 21,
+        JSON.stringify({ processed: pinScope.processed, counts: pinned.timings.counts }),
+      )
+      const next = await pinRig.api.metadata(PROJECT, { sessionId: TEST_SESSION, scopeMode: 'history', scopeCursor: pinScope.nextCursor })
+      check(
+        'T-239 the pinned page continues on a cursor without repeating a row',
+        next.ok === true && next.meta.scope.sessions[0].sessionId === 'session-19' && next.meta.scope.sessions.every((row) => row.sessionId !== TEST_SESSION),
+        JSON.stringify(next.meta.scope === null ? null : next.meta.scope.sessions.slice(0, 2)),
+      )
+    }
+
+    // 5) Two panels asking AT ONCE share one in-flight build instead of starting
+    // two read sequences.
+    {
+      const flightRig = createRig({ taskAgents: createFakeTaskAgents() })
+      seedBoard(flightRig.fs, PROJECT, longBoard())
+      let release = null
+      const gate = new Promise((resolveGate) => {
+        release = resolveGate
+      })
+      let lookups = 0
+      flightRig.state.lookupSessionRoot = async function (sessionId) {
+        lookups += 1
+        if (lookups === 1) await gate
+        return { ok: false, code: 'no-session', message: 'fixture: no workspace' }
+      }
+      const first = flightRig.api.metadata(PROJECT, { sessionId: TEST_SESSION, timings: true })
+      // Wait until the shared build is parked inside its first workspace read.
+      while (lookups === 0) await sleep(1)
+      const second = flightRig.api.metadata(PROJECT, { sessionId: 'session-04', timings: true })
+      await sleep(10)
+      release()
+      const results = await Promise.all([first, second])
+      check(
+        'T-239 two panels on one project share ONE in-flight scope build',
+        results[0].meta.scope.cache === 'miss' && results[1].meta.scope.cache === 'shared' && results[0].meta.scope.total === total && results[1].meta.scope.total === total,
+        JSON.stringify({ a: results[0].meta.scope === null ? null : results[0].meta.scope.cache, b: results[1].meta.scope === null ? null : results[1].meta.scope.cache }),
+      )
+      check('T-239 the shared build reads the page once, not once per panel', lookups >= 20 && lookups <= 25, JSON.stringify({ lookups: lookups }))
+      console.log('PASS  T-239 the current session is pinned and two panels share one build')
+    }
+
+    // 6) The TTL: a cached project scope is REUSED inside its window and rebuilt
+    // after it. The window is overridden to 1 ms here (per API instance).
+    {
+      const savedTtl = process.env.GODOT_BRIDGE_SCOPE_TTL_MS
+      process.env.GODOT_BRIDGE_SCOPE_TTL_MS = '1'
+      try {
+        const ttlRig = createRig({ taskAgents: createFakeTaskAgents() })
+        seedBoard(ttlRig.fs, PROJECT, longBoard())
+        const ttlSurface = install(ttlRig)
+        const first = await metaCall(ttlSurface, queryOf(TEST_SESSION, 'timings=1'))
+        await sleep(5)
+        const again = await metaCall(ttlSurface, queryOf('session-04', 'timings=1'))
+        check(
+          'T-239 the project scope lives for a short TTL and is rebuilt after it',
+          first.meta.scope.cache === 'miss' &&
+            again.meta.scope.cache === 'miss' &&
+            again.timings.counts.scopeBuild === 1 &&
+            again.timings.counts.scopeSessions === 20,
+          JSON.stringify({ first: first.meta.scope === null ? null : first.meta.scope.cache, again: again.meta.scope === null ? null : again.meta.scope.cache, counts: again.timings === undefined ? null : again.timings.counts }),
+        )
+      } finally {
+        if (savedTtl === undefined) delete process.env.GODOT_BRIDGE_SCOPE_TTL_MS
+        else process.env.GODOT_BRIDGE_SCOPE_TTL_MS = savedTtl
+      }
+    }
+
+    // 8) A card still IN PROGRESS keeps its owner's liveness readable even when
+    // that owner is OUTSIDE the hot page: a live owner must still block takeover.
+    {
+      const sessionsDir = mkdtempSync(join(tmpdir(), 'gb-t239-'))
+      const savedDir = process.env.GODOT_BRIDGE_SESSIONS_DIR
+      try {
+        mkdirSync(join(sessionsDir, '--fixture-project--'))
+        writeFileSync(join(sessionsDir, '--fixture-project--', 'session-session-70'), 'x')
+        process.env.GODOT_BRIDGE_SESSIONS_DIR = sessionsDir
+        const activeRig = createRig({ taskAgents: createFakeTaskAgents() })
+        const tasks = JSON.parse(longBoard()).tasks.slice(0, 30)
+        inFlight(tasks)
+        seedBoard(activeRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 6, tasks: tasks }))
+        const out = await activeRig.api.metadata(PROJECT, { sessionId: TEST_SESSION })
+        const scope = out.meta.scope
+        check(
+          'T-239 a LIVE owner outside the hot page still blocks takeover',
+          out.ok === true &&
+            scope.handoff.cards.length === 1 &&
+            scope.handoff.cards[0].ownerSession === 'session-70' &&
+            scope.handoff.cards[0].ownerStatus === 'live' &&
+            scope.handoff.eligibility.takeover.ok === false &&
+            scope.handoff.eligibility.takeover.blockedBy.some((entry) => entry.reason === 'owning-session-live'),
+          JSON.stringify({ cards: scope === null ? null : scope.handoff.cards.length, card: scope === null ? null : scope.handoff.cards[0], ok: scope === null ? null : scope.handoff.eligibility.takeover.ok }),
+        )
+        check(
+          'T-239 ... while the hot page itself stays bounded',
+          scope.sessions.length === 20 && scope.total === 31 && scope.processed === 21,
+          JSON.stringify({ sessions: scope.sessions.length, total: scope.total, processed: scope.processed }),
+        )
+      } finally {
+        if (savedDir === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
+        else process.env.GODOT_BRIDGE_SESSIONS_DIR = savedDir
+        rmSync(sessionsDir, { recursive: true, force: true })
+      }
+    }
+
+    // 7) An OLD client sends no paging parameters at all: it gets the hot page and
+    // the truncated flag, and every field it already reads stays where it was.
+    {
+      const oldRig = createRig({ taskAgents: createFakeTaskAgents() })
+      seedBoard(oldRig.fs, PROJECT, longBoard())
+      const oldSurface = install(oldRig)
+      const unpaged = await metaCall(oldSurface, queryOf(TEST_SESSION))
+      const scope = unpaged.meta.scope
+      check(
+        'T-239 an unpaged client keeps every field it reads, now covering the hot page',
+        unpaged.ok === true &&
+          scope.panelSession === TEST_SESSION &&
+          scope.panelSessionParticipates === true &&
+          typeof scope.currentSessionProject === 'string' &&
+          Array.isArray(scope.sessionSummaries) &&
+          scope.sessionSummaries.length === 20 &&
+          Array.isArray(scope.projectSessions) &&
+          scope.projectSessions.length === 20 &&
+          scope.light === false &&
+          scope.livenessSource === 'host',
+        JSON.stringify({ sessions: scope === null ? null : scope.projectSessions.length }),
+      )
+    }
+  } finally {
+    if (savedSessionsDir === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
+    else process.env.GODOT_BRIDGE_SESSIONS_DIR = savedSessionsDir
+  }
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
