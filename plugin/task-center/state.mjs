@@ -28,6 +28,28 @@ function messageOf(error) {
 }
 
 /**
+ * T-239: the RECENCY order of participating sessions — newest lastSeenAt first,
+ * then newest firstSeenAt, then the id (so the order is total and stable).
+ *
+ * A session the registry/board has never timestamped has NO recency and sorts
+ * last; nothing is guessed from the clock. This is deliberately pure: paging
+ * must be a function of the LIGHTWEIGHT index alone, so the same list always
+ * yields the same pages. Exported because the API cuts and continues cursors
+ * with the very same comparison.
+ */
+export function compareSessionRecency(left, right) {
+  const leftLast = typeof left.lastSeenAt === 'string' ? left.lastSeenAt : ''
+  const rightLast = typeof right.lastSeenAt === 'string' ? right.lastSeenAt : ''
+  const byLast = rightLast.localeCompare(leftLast)
+  if (byLast !== 0) return byLast
+  const leftFirst = typeof left.firstSeenAt === 'string' ? left.firstSeenAt : ''
+  const rightFirst = typeof right.firstSeenAt === 'string' ? right.firstSeenAt : ''
+  const byFirst = rightFirst.localeCompare(leftFirst)
+  if (byFirst !== 0) return byFirst
+  return String(left.sessionId).localeCompare(String(right.sessionId))
+}
+
+/**
  * @param ctx - the row's context; needs fs.
  * @param options.now - clock injection, for tests.
  * @param options.afterWrite - called after a board write lands; its result is
@@ -409,6 +431,31 @@ export function createState(ctx, options) {
     return { source: derived.length > 0 ? 'registry+board-owners' : 'registry', sessions: sessions }
   }
 
+  /**
+   * T-239: the LIGHTWEIGHT session index of one project — the input a PAGED
+   * scope needs.
+   *
+   * Paging needs two facts that the participation SET does not provide: the
+   * project's TOTAL, and a deterministic recency ORDER to cut pages on. Neither
+   * may cost a host read, so this index carries only what the registry and the
+   * board already record — sessionId, firstSeenAt, lastSeenAt — and never
+   * touches a DSH session directory, a conversation log or a workspace lookup.
+   * projectSessionsFor() stays the SET reader (first-appearance order, no
+   * ranking); this is explicitly a paging ORDER.
+   */
+  function projectSessionIndexFor(projectPath, board) {
+    const read = projectSessionsFor(projectPath, board)
+    const rows = Array.isArray(read.sessions) ? read.sessions : []
+    const sessions = rows
+      .map((row) => ({
+        sessionId: row.sessionId,
+        firstSeenAt: typeof row.firstSeenAt === 'string' ? row.firstSeenAt : null,
+        lastSeenAt: typeof row.lastSeenAt === 'string' ? row.lastSeenAt : null,
+      }))
+      .sort(compareSessionRecency)
+    return { source: read.source, sessions: sessions, total: sessions.length }
+  }
+
   /** Adopt the project a panel request carries, and make sure the loop drives it. */
   async function adoptPanelProject(projectPath, sessionId) {
     const ref = touchProject(projectPath, sessionId)
@@ -498,6 +545,7 @@ export function createState(ctx, options) {
     resolveProject: resolveProject,
     activeProjects: activeProjects,
     projectSessionsFor: projectSessionsFor,
+    projectSessionIndexFor: projectSessionIndexFor,
     adoptPanelProject: adoptPanelProject,
     setSessionRoot: function (sessionId, root) {
       if (typeof sessionId !== 'string' || sessionId === '' || root === undefined) return null
